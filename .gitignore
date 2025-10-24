@@ -1,0 +1,64 @@
+# ============================================================
+# Vivado project noise — keep only HDL, XDC, and scripts
+# ============================================================
+
+# Vivado project files and build artefacts
+*.xpr
+*.xml
+*.jou
+*.log
+*.str
+*.pb
+*.html
+*.ltx
+*.rpt
+*.csv
+*.dcp
+*.gise
+*.backup/
+*.tmp/
+*.vivado_lock
+*.webtalk/
+*.gen/
+*.hw/
+*.ip_user_files/
+*.cache/
+*.runs/
+*.sim/
+*.Xil/
+*.sdk/
+*.data/
+*.bit
+*.bin
+*.mcs
+*.xsa
+
+# Board files / misc generated folders
+*.srcs/      # generated structure under project mode
+*.ipdefs/
+*.metadata/
+
+# IDE & temp
+.vscode/
+.idea/
+*.swp
+*~
+*.bak
+
+# ============================================================
+# Keep design source files and scripts
+# ============================================================
+
+# Un-ignore HDL, constraints, and project scripts everywhere
+!**/*.v
+!**/*.sv
+!**/*.vh
+!**/*.svh
+!**/*.vhd
+!**/*.vhdl
+!**/*.xdc
+!**/*.tcl
+!**/*.py
+!**/*.sh
+!**/Makefile
+!**/.gitignore

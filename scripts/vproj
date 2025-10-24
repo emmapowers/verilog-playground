@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+vproj — Vivado project manager (add/remove/list/export-tcl/import-tcl)
+
+Requires:
+  - Python 3.8+
+  - click (pip install click)
+  - Vivado available in PATH, or pass --settings to source settings64.sh
+
+Examples:
+  vproj list
+  vproj add src/top.sv constrs/nexys_a7_100t.xdc
+  vproj remove src/old.sv
+  vproj export-tcl --out project.tcl --rel-to .
+  vproj import-tcl project.tcl
+
+  # If Vivado isn't on PATH:
+  vproj --settings /opt/Xilinx/Vivado/2024.1/settings64.sh list
+"""
+from __future__ import annotations
+
+import code
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Iterable, List, Optional, Tuple
+
+import click
+
+# --------------------------- file-kind detection ------------------------------
+
+EXT_KIND = {
+    # HDL
+    ".v": "hdl",
+    ".sv": "hdl",
+    ".vhd": "hdl",
+    ".vhdl": "hdl",
+    ".xci": "ip",
+    ".bd": "ip",
+
+    # Headers (kept in sources_1 by default)
+    ".vh": "header",
+    ".svh": "header",
+
+    # Constraints
+    ".xdc": "xdc",
+
+    # Other (mem inits, tcl helpers, etc.)
+    ".mem": "other",
+    ".tcl": "other",
+}
+KIND_FILESET = {
+    "hdl": "sources_1",
+    "header": "sources_1",
+    "ip": "sources_1",
+    "xdc": "constrs_1",
+    "sim": "sim_1",
+    "other": "sources_1",
+}
+VALID_KINDS = tuple(sorted(set(KIND_FILESET.keys())))
+
+
+def detect_kind(path: Path) -> str:
+    ext = path.suffix.lower()
+    k = EXT_KIND.get(ext)
+    if k:
+        return k
+    # Heuristic: HDL under /sim/ or /tb/ folders → sim fileset
+    if ext in {".v", ".sv", ".vhd", ".vhdl"} and any(p in {"sim", "tb", "testbench"} for p in path.parts):
+        return "sim"
+    return "other"
+
+
+# --------------------------- Vivado helpers ----------------------------------
+
+def tcl_quote(p: Path) -> str:
+    return "{" + str(p) + "}"
+
+
+def run_vivado_tcl(tcl: str, *, settings: Optional[Path], vivado: str, quiet: bool) -> int:
+    """Write Tcl to a temp file and invoke Vivado batch."""
+    with tempfile.NamedTemporaryFile("w", suffix=".tcl", delete=False) as tf:
+        tf.write(tcl)
+        tcl_path = Path(tf.name)
+
+    cmd = f'{shlex.quote(vivado)} -mode batch -nolog -nojournal -notrace -source {shlex.quote(str(tcl_path))}'
+    try:
+        if settings:
+            full = f'source {shlex.quote(str(settings))} && {cmd}'
+            proc = subprocess.run(["bash", "-lc", full], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        else:
+            proc = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if not quiet:
+            click.echo(proc.stdout, nl=True)
+        return proc.returncode
+    finally:
+        try:
+            tcl_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def make_prelude_open_project(xpr: Path) -> str:
+    return f"""
+set proj {tcl_quote(xpr.resolve())}
+if {{![file exists $proj]}} {{
+  puts "ERROR: Project not found: $proj"
+  exit 2
+}}
+open_project $proj
+set_msg_config -severity INFO -suppress
+"""
+
+
+# --------------------------- project discovery --------------------------------
+
+def find_xpr(hint: Optional[Path]) -> Path:
+    """
+    If 'hint' is:
+      - a file ending with .xpr → use it
+      - a directory → search for *.xpr in that dir (non-recursive); if multiple, pick newest mtime
+      - None → search cwd (.)
+    """
+    if hint:
+        if hint.is_file() and hint.suffix.lower() == ".xpr":
+            return hint.resolve()
+        if hint.is_dir():
+            dir_ = hint
+        else:
+            # if a non-existent path was passed, try its parent dir; else error
+            dir_ = hint.parent if hint.suffix == "" else Path(".")
+    else:
+        dir_ = Path(".")
+
+    xprs = sorted(dir_.glob("*.xpr"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not xprs:
+        raise click.UsageError(f"No .xpr found in {dir_.resolve()}. "
+                               f"Pass --proj /path/to/project.xpr or run 'vproj import-tcl project.tcl'.")
+    if len(xprs) > 1:
+        # choose the newest, but inform user
+        click.echo(f"Found multiple .xpr files; using newest: {xprs[0].name}", err=True)
+    return xprs[0].resolve()
+
+
+# --------------------------- CLI root ----------------------------------------
+
+@click.group(context_settings=dict(help_option_names=["-h", "--help"]))
+@click.option("--proj", "proj_hint", type=click.Path(path_type=Path), required=False,
+              help="Path to .xpr OR a directory to search. If omitted, search current dir.")
+@click.option("--vivado", default="vivado", show_default=True,
+              help="Vivado executable.")
+@click.option("--settings", type=click.Path(path_type=Path, exists=True),
+              help="Optional settings64.sh to source before invoking Vivado.")
+@click.option("-q", "--quiet", is_flag=True, help="Suppress Vivado stdout.")
+@click.pass_context
+def cli(ctx, proj_hint: Optional[Path], vivado: str, settings: Optional[Path], quiet: bool):
+    """Manage Vivado .xpr projects (add/remove/list/export-tcl/import-tcl) without the GUI."""
+    ctx.ensure_object(dict)
+    ctx.obj.update(vivado=vivado, settings=settings, quiet=quiet, proj_hint=proj_hint)
+
+
+# --------------------------- list/add/remove ----------------------------------
+
+@cli.command("list")
+@click.pass_context
+def list_cmd(ctx):
+    """List files in sources_1, constrs_1, and sim_1 (fileset|path|type)."""
+    xpr = find_xpr(ctx.obj["proj_hint"])
+    tcl = make_prelude_open_project(xpr) + r"""
+foreach fs [list sources_1 constrs_1 sim_1] {
+  set fsobj [get_filesets -quiet $fs]
+  if {[llength $fsobj] == 0} { continue }
+  foreach f [get_files -of_objects $fsobj] {
+    set p [get_property NAME $f]
+    set t [get_property FILE_TYPE $f]
+    puts "$fs|$p|$t"
+  }
+}
+close_project
+"""
+    raise SystemExit(run_vivado_tcl(tcl, settings=ctx.obj["settings"], vivado=ctx.obj["vivado"], quiet=ctx.obj["quiet"]))
+
+
+@cli.command("add")
+@click.argument("files", type=click.Path(path_type=Path, exists=True), nargs=-1, required=True)
+@click.option("--type", "forced_kind",
+              type=click.Choice(VALID_KINDS, case_sensitive=False),
+              help="Force file kind (otherwise auto-detect by extension).")
+@click.pass_context
+def add_cmd(ctx, files: Tuple[Path, ...], forced_kind: Optional[str]):
+    """Add one or more files to the project (auto-detect type by extension)."""
+    xpr = find_xpr(ctx.obj["proj_hint"])
+    lines: List[str] = [make_prelude_open_project(xpr)]
+    for p in files:
+        kind = forced_kind.lower() if forced_kind else detect_kind(p)
+        fs = KIND_FILESET[kind]
+        lines.append(f'puts "ADD {fs} {p.name}"')
+        lines.append(f"add_files -fileset {fs} {tcl_quote(p.resolve())}")
+        if kind == "xdc":
+            lines.append(f"set f [get_files {tcl_quote(p.resolve())}]")
+            lines.append("if {[llength $f] > 0} {"
+                         "set_property USED_IN_SYNTHESIS true $f; "
+                         "set_property USED_IN_IMPLEMENTATION true $f; }")
+    lines += ["save_project", "close_project"]
+    tcl = "\n".join(lines) + "\n"
+    code = run_vivado_tcl(tcl, settings=ctx.obj["settings"], vivado=ctx.obj["vivado"], quiet=ctx.obj["quiet"])
+    if code == 0 and not ctx.obj["quiet"]:
+        click.echo("ADD: done.")
+    raise SystemExit(code)
+
+
+@cli.command("remove")
+@click.argument("files", type=click.Path(path_type=Path), nargs=-1, required=True)
+@click.pass_context
+def remove_cmd(ctx, files: Tuple[Path, ...]):
+    """Remove one or more files from the project (from any fileset)."""
+    xpr = find_xpr(ctx.obj["proj_hint"])
+    lines = [make_prelude_open_project(xpr)]
+    for p in files:
+        rp = tcl_quote(Path(p).resolve())
+        lines.append(f'puts "REMOVE {Path(p).name}"')
+        lines.append(f"set objs [get_files -quiet {rp}]")
+        lines.append("if {[llength $objs] > 0} { remove_files $objs } else {"
+                     f'puts "WARN: File not in project: {Path(p)}"; }}')
+    lines += ["save_project", "close_project"]
+    tcl = "\n".join(lines) + "\n"
+    code = run_vivado_tcl(tcl, settings=ctx.obj["settings"], vivado=ctx.obj["vivado"], quiet=ctx.obj["quiet"])
+    if code == 0 and not ctx.obj["quiet"]:
+        click.echo("REMOVE: done.")
+    raise SystemExit(code)
+
+
+# --------------------------- export/import project.tcl ------------------------
+
+@cli.command("export-tcl")
+@click.option("--out", "out_tcl", type=click.Path(path_type=Path), required=True,
+              help="Output project Tcl path (e.g. project.tcl).")
+@click.option("--rel-to", "rel_to", type=click.Path(path_type=Path), required=False,
+              help="Make paths relative to this directory (write_project_tcl -paths_relative_to).")
+@click.option("--no-copy-sources", is_flag=True, help="Use -no_copy_sources to keep references to existing files.")
+@click.pass_context
+def export_tcl_cmd(ctx, out_tcl: Path, rel_to: Optional[Path], no_copy_sources: bool):
+    """Write a reproducible project Tcl (uses write_project_tcl)."""
+    if rel_to is None:
+        rel_to = Path(".").resolve()
+    xpr = find_xpr(ctx.obj["proj_hint"])
+    flags = ["-force", "-paths_relative_to", str(rel_to.resolve())]
+    if no_copy_sources:
+        flags += ["-no_copy_sources"]
+    flags_str = " ".join(flags)
+
+    tcl = make_prelude_open_project(xpr) + f"""
+file mkdir [file dirname {tcl_quote(out_tcl.resolve())}]
+write_project_tcl {flags_str} {tcl_quote(out_tcl.resolve())}
+close_project
+"""
+    code = run_vivado_tcl(tcl, settings=ctx.obj["settings"], vivado=ctx.obj["vivado"], quiet=ctx.obj["quiet"])
+
+    # After run_vivado_tcl(...)
+    if code == 0:
+        # Sanitize origin_dir
+        text = out_tcl.read_text()
+        text = re.sub(r'^set origin_dir\s+.*$', 'set origin_dir [file normalize [pwd]]', text, flags=re.MULTILINE)
+        out_tcl.write_text(text)
+
+    if code == 0 and not ctx.obj["quiet"]:
+        click.echo(f"Wrote {out_tcl}")
+    raise SystemExit(code)
+
+
+@cli.command("import-tcl")
+@click.argument("project_tcl", type=click.Path(path_type=Path, exists=True))
+@click.option("--workdir", type=click.Path(path_type=Path), help="cd into this dir before sourcing TCL.")
+@click.pass_context
+def import_tcl_cmd(ctx, project_tcl: Path, workdir: Optional[Path]):
+    """
+    Create a project by sourcing a project Tcl (generated with write_project_tcl).
+    Equivalent to: vivado -mode batch -source project.tcl
+    """
+    pre = ""
+    if workdir:
+        pre = f"cd {tcl_quote(Path(workdir).resolve())}\n"
+    tcl = pre + f"source {tcl_quote(Path(project_tcl).resolve())}\n"
+    # Vivado scripts commonly close the project themselves; harmless if not.
+    code = run_vivado_tcl(tcl, settings=ctx.obj["settings"], vivado=ctx.obj["vivado"], quiet=ctx.obj["quiet"])
+    raise SystemExit(code)
+
+
+# --------------------------- entry -------------------------------------------
+
+def main():
+    cli(obj={})
+
+if __name__ == "__main__":
+    main()
