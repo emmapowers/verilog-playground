@@ -109,7 +109,7 @@ import-tcl:
 		exit 1; \
 	fi
 	@echo "==> Importing Vivado project from $(PROJECT_TCL)"
-	@$(VPROJ) --settings "$(VIVADO_SETTINGS)" import-tcl "$(PROJECT_TCL)" --workdir .
+	scripts/vproj --settings "$(VIVADO_SETTINGS)" import-tcl "$(PROJECT_TCL)"
 	@echo "==> Vivado project recreated in $(PROJECT_DIR)"
 
 export-tcl:

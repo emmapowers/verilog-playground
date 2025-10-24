@@ -245,51 +245,86 @@ def remove_cmd(ctx, files: Tuple[Path, ...]):
 @click.option("--no-copy-sources", is_flag=True, help="Use -no_copy_sources to keep references to existing files.")
 @click.pass_context
 def export_tcl_cmd(ctx, out_tcl: Path, rel_to: Optional[Path], no_copy_sources: bool):
-    """Write a reproducible project Tcl (uses write_project_tcl)."""
-    if rel_to is None:
-        rel_to = Path(".").resolve()
+    """Write a reproducible project Tcl (uses write_project_tcl, excluding .dcp files)."""
     xpr = find_xpr(ctx.obj["proj_hint"])
-    flags = ["-force", "-paths_relative_to", str(rel_to.resolve())]
+
+    flags = ["-force", "-all_properties"]
+    if rel_to:
+        flags += ["-paths_relative_to", str(rel_to.resolve())]
     if no_copy_sources:
         flags += ["-no_copy_sources"]
     flags_str = " ".join(flags)
 
-    tcl = make_prelude_open_project(xpr) + f"""
-file mkdir [file dirname {tcl_quote(out_tcl.resolve())}]
-write_project_tcl {flags_str} {tcl_quote(out_tcl.resolve())}
+    # Tcl prelude
+    tcl = make_prelude_open_project(xpr)
+
+    # 🧹 Remove any DCP/imported files from the project before writing
+    tcl += r"""
+puts "Cleaning imported DCP/EDIF files before export..."
+set to_remove [list]
+foreach f [get_files -all] {
+    if {[string match *.dcp $f] || [string match *.edif $f] || [string match *imports/* $f]} {
+        lappend to_remove $f
+    }
+}
+if {[llength $to_remove]} {
+    puts "Removing [llength $to_remove] imported files temporarily..."
+    remove_files -quiet $to_remove
+}
+
+file mkdir [file dirname {""" + str(out_tcl.resolve()) + r"""}]
+write_project_tcl """ + flags_str + " " + tcl_quote(out_tcl.resolve()) + r"""
+puts "Project Tcl written successfully."
+
+# Restore project (if needed)
 close_project
 """
     code = run_vivado_tcl(tcl, settings=ctx.obj["settings"], vivado=ctx.obj["vivado"], quiet=ctx.obj["quiet"])
-
-    # After run_vivado_tcl(...)
-    if code == 0:
-        # Sanitize origin_dir
-        text = out_tcl.read_text()
-        text = re.sub(r'^set origin_dir\s+.*$', 'set origin_dir [file normalize [pwd]]', text, flags=re.MULTILINE)
-        out_tcl.write_text(text)
-
     if code == 0 and not ctx.obj["quiet"]:
-        click.echo(f"Wrote {out_tcl}")
+        click.echo(f"Wrote {out_tcl}.")
     raise SystemExit(code)
 
 
 @cli.command("import-tcl")
 @click.argument("project_tcl", type=click.Path(path_type=Path, exists=True))
 @click.option("--workdir", type=click.Path(path_type=Path), help="cd into this dir before sourcing TCL.")
+@click.option("--force", is_flag=True, help="Force overwrite existing project (inject -force).")
 @click.pass_context
-def import_tcl_cmd(ctx, project_tcl: Path, workdir: Optional[Path]):
-    """
-    Create a project by sourcing a project Tcl (generated with write_project_tcl).
-    Equivalent to: vivado -mode batch -source project.tcl
-    """
+def import_tcl_cmd(ctx, project_tcl: Path, workdir: Optional[Path], force: bool):
     pre = ""
     if workdir:
         pre = f"cd {tcl_quote(Path(workdir).resolve())}\n"
-    tcl = pre + f"source {tcl_quote(Path(project_tcl).resolve())}\n"
-    # Vivado scripts commonly close the project themselves; harmless if not.
-    code = run_vivado_tcl(tcl, settings=ctx.obj["settings"], vivado=ctx.obj["vivado"], quiet=ctx.obj["quiet"])
-    raise SystemExit(code)
 
+    src = Path(project_tcl).read_text()
+
+    import re
+    # 1) Normalize create_project to use '.' as the directory
+    #    Typical export is: create_project <name> <dir> <opts...>
+    #    Replace the second positional arg with '.'
+    src = re.sub(r'(?m)^(\\s*create_project\\s+[^\\s]+)\\s+[^\\s]+', r'\\1 .', src, count=1)
+
+    # 2) Inject -force if requested (and missing)
+    if force:
+        def add_force(m):
+            line = m.group(0)
+            return line if "-force" in line else line.replace("create_project", "create_project -force", 1)
+        src = re.sub(r'(?m)^\\s*create_project\\b[^\n]*', add_force, src, count=1)
+
+    # (Optional) make origin_dir portable if present
+    src = re.sub(r'(?m)^set\\s+origin_dir\\s+.*$', 'set origin_dir [file normalize [pwd]]', src)
+
+    # Write to temp and source it
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".tcl", delete=False) as tf:
+        tf.write(src)
+        patched = Path(tf.name)
+
+    tcl = pre + f"source {tcl_quote(patched.resolve())}\n"
+    code = run_vivado_tcl(tcl, settings=ctx.obj["settings"], vivado=ctx.obj["vivado"], quiet=ctx.obj["quiet"])
+    try:
+        patched.unlink(missing_ok=True)
+    finally:
+        raise SystemExit(code)
 
 # --------------------------- entry -------------------------------------------
 
