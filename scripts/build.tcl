@@ -1,41 +1,34 @@
-# Rebuild a *project-mode* Vivado design end-to-end (synth → impl → bit)
-# Usage: vivado -mode batch -source build.tcl -nolog -nojournal -notrace
+# build.tcl — synth + impl + reports + bit
+set proj_dir  [file normalize "project_files"]
+set xprs [glob -nocomplain -types f -directory $proj_dir *.xpr]
+if {[llength $xprs] == 0} { error "No .xpr found in $proj_dir" }
+open_project [lindex $xprs 0]
 
-# Open the existing project
-set proj [lindex [glob -nocomplain *.xpr] 0]
-if {$proj eq ""} {
-  puts "ERROR: No .xpr found in current directory."
-  exit 1
-}
-open_project $proj
+# Optional: set top if needed
+# set_property top top [current_fileset]
 
-# Optional: pick a specific part/board constraint changes here if needed
+update_compile_order -fileset sources_1
 
-# Clean and re-launch runs
-reset_run synth_1
-launch_runs synth_1 -jobs [expr {[get_param general.maxThreads] > 0 ? [get_param general.maxThreads] : 4}]
+catch { reset_run synth_1 }
+catch { reset_run impl_1 }
+
+launch_runs synth_1 -jobs 8
 wait_on_run synth_1
 
-reset_run impl_1
-launch_runs impl_1 -to_step write_bitstream -jobs [expr {[get_param general.maxThreads] > 0 ? [get_param general.maxThreads] : 4}]
+launch_runs impl_1 -to_step write_bitstream -jobs 8
 wait_on_run impl_1
 
-# Report and paths
-set impl_dir [get_property DIRECTORY [get_runs impl_1]]
-set bitfile [file normalize "$impl_dir/top.bit"]
-if {![file exists $bitfile]} {
-  # Fallback: find any .bit produced in impl_1
-  set bits [glob -nocomplain -types f "$impl_dir/*.bit"]
-  if {[llength $bits] == 0} {
-    puts "ERROR: No .bit file found."
-    exit 2
-  }
-  set bitfile [lindex $bits 0]
-}
+open_run impl_1
+
+# Reports directory
+set rptdir [file normalize "$proj_dir/reports"]
+file mkdir $rptdir
+
+# Reports (no -pb)
+report_utilization    -file "$rptdir/utilization.rpt"
+report_timing_summary -file "$rptdir/timing_summary.rpt" -warn_on_violation
+
+set bitfile [get_property BITSTREAM.FILE [get_runs impl_1]]
 puts "BITSTREAM: $bitfile"
 
-# Optional useful reports
-report_timing_summary    -file timing_summary.rpt
-report_utilization       -file utilization.rpt
-
-exit 0
+close_project

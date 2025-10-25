@@ -202,7 +202,7 @@ def add_cmd(ctx, files: Tuple[Path, ...], forced_kind: Optional[str]):
             lines.append("if {[llength $f] > 0} {"
                          "set_property USED_IN_SYNTHESIS true $f; "
                          "set_property USED_IN_IMPLEMENTATION true $f; }")
-    lines += ["save_project", "close_project"]
+    lines += ["close_project"]
     tcl = "\n".join(lines) + "\n"
     code = run_vivado_tcl(tcl, settings=ctx.obj["settings"], vivado=ctx.obj["vivado"], quiet=ctx.obj["quiet"])
     if code == 0 and not ctx.obj["quiet"]:
@@ -223,7 +223,7 @@ def remove_cmd(ctx, files: Tuple[Path, ...]):
         lines.append(f"set objs [get_files -quiet {rp}]")
         lines.append("if {[llength $objs] > 0} { remove_files $objs } else {"
                      f'puts "WARN: File not in project: {Path(p)}"; }}')
-    lines += ["save_project", "close_project"]
+    lines += ["close_project"]
     tcl = "\n".join(lines) + "\n"
     code = run_vivado_tcl(tcl, settings=ctx.obj["settings"], vivado=ctx.obj["vivado"], quiet=ctx.obj["quiet"])
     if code == 0 and not ctx.obj["quiet"]:
