@@ -32,6 +32,8 @@ from typing import Iterable, List, Optional, Tuple
 
 import click
 
+PROJECT_DIR_DEFAULT = "project_files"
+
 # --------------------------- file-kind detection ------------------------------
 
 EXT_KIND = {
@@ -119,30 +121,22 @@ set_msg_config -severity INFO -suppress
 
 # --------------------------- project discovery --------------------------------
 
-def find_xpr(hint: Optional[Path]) -> Path:
+def find_xpr(hint: Optional[Path], proj_dir: Optional[Path] = None) -> Path:
     """
-    If 'hint' is:
-      - a file ending with .xpr → use it
-      - a directory → search for *.xpr in that dir (non-recursive); if multiple, pick newest mtime
-      - None → search cwd (.)
+    Prefer .xpr under project_files/ (or user --proj-dir), unless an explicit .xpr path is given.
     """
-    if hint:
-        if hint.is_file() and hint.suffix.lower() == ".xpr":
-            return hint.resolve()
-        if hint.is_dir():
-            dir_ = hint
-        else:
-            # if a non-existent path was passed, try its parent dir; else error
-            dir_ = hint.parent if hint.suffix == "" else Path(".")
-    else:
-        dir_ = Path(".")
+    if hint and hint.is_file() and hint.suffix.lower() == ".xpr":
+        return hint.resolve()
 
-    xprs = sorted(dir_.glob("*.xpr"), key=lambda p: p.stat().st_mtime, reverse=True)
+    base = Path(".") if hint is None else (hint if hint.is_dir() else hint.parent)
+    proj_root = (proj_dir or Path(PROJECT_DIR_DEFAULT))
+    search_dir = (base / proj_root) if (proj_root != Path(".")) else base
+
+    xprs = sorted(search_dir.glob("*.xpr"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not xprs:
-        raise click.UsageError(f"No .xpr found in {dir_.resolve()}. "
-                               f"Pass --proj /path/to/project.xpr or run 'vproj import-tcl project.tcl'.")
+        raise click.UsageError(f"No .xpr found in {search_dir.resolve()}. "
+                               f"Run 'vproj import-tcl --proj-dir {proj_root}' first.")
     if len(xprs) > 1:
-        # choose the newest, but inform user
         click.echo(f"Found multiple .xpr files; using newest: {xprs[0].name}", err=True)
     return xprs[0].resolve()
 
@@ -157,11 +151,13 @@ def find_xpr(hint: Optional[Path]) -> Path:
 @click.option("--settings", type=click.Path(path_type=Path, exists=True),
               help="Optional settings64.sh to source before invoking Vivado.")
 @click.option("-q", "--quiet", is_flag=True, help="Suppress Vivado stdout.")
+@click.option("--proj-dir", type=click.Path(path_type=Path), default=PROJECT_DIR_DEFAULT, show_default=True,
+              help="Directory where the Vivado project (.xpr) lives (created on import).")
 @click.pass_context
-def cli(ctx, proj_hint: Optional[Path], vivado: str, settings: Optional[Path], quiet: bool):
+def cli(ctx, proj_hint: Optional[Path], vivado: str, settings: Optional[Path], proj_dir: Optional[Path], quiet: bool):
     """Manage Vivado .xpr projects (add/remove/list/export-tcl/import-tcl) without the GUI."""
     ctx.ensure_object(dict)
-    ctx.obj.update(vivado=vivado, settings=settings, quiet=quiet, proj_hint=proj_hint)
+    ctx.obj.update(vivado=vivado, settings=settings, quiet=quiet, proj_hint=proj_hint, proj_dir=proj_dir)
 
 
 # --------------------------- list/add/remove ----------------------------------
@@ -170,7 +166,7 @@ def cli(ctx, proj_hint: Optional[Path], vivado: str, settings: Optional[Path], q
 @click.pass_context
 def list_cmd(ctx):
     """List files in sources_1, constrs_1, and sim_1 (fileset|path|type)."""
-    xpr = find_xpr(ctx.obj["proj_hint"])
+    xpr = xpr = find_xpr(ctx.obj["proj_hint"], ctx.obj["proj_dir"])
     tcl = make_prelude_open_project(xpr) + r"""
 foreach fs [list sources_1 constrs_1 sim_1] {
   set fsobj [get_filesets -quiet $fs]
@@ -194,7 +190,7 @@ close_project
 @click.pass_context
 def add_cmd(ctx, files: Tuple[Path, ...], forced_kind: Optional[str]):
     """Add one or more files to the project (auto-detect type by extension)."""
-    xpr = find_xpr(ctx.obj["proj_hint"])
+    xpr = xpr = find_xpr(ctx.obj["proj_hint"], ctx.obj["proj_dir"])
     lines: List[str] = [make_prelude_open_project(xpr)]
     for p in files:
         kind = forced_kind.lower() if forced_kind else detect_kind(p)
@@ -219,7 +215,7 @@ def add_cmd(ctx, files: Tuple[Path, ...], forced_kind: Optional[str]):
 @click.pass_context
 def remove_cmd(ctx, files: Tuple[Path, ...]):
     """Remove one or more files from the project (from any fileset)."""
-    xpr = find_xpr(ctx.obj["proj_hint"])
+    xpr = xpr = find_xpr(ctx.obj["proj_hint"], ctx.obj["proj_dir"])
     lines = [make_prelude_open_project(xpr)]
     for p in files:
         rp = tcl_quote(Path(p).resolve())
@@ -238,88 +234,145 @@ def remove_cmd(ctx, files: Tuple[Path, ...]):
 # --------------------------- export/import project.tcl ------------------------
 
 @cli.command("export-tcl")
-@click.option("--out", "out_tcl", type=click.Path(path_type=Path), required=True,
-              help="Output project Tcl path (e.g. project.tcl).")
-@click.option("--rel-to", "rel_to", type=click.Path(path_type=Path), required=False,
-              help="Make paths relative to this directory (write_project_tcl -paths_relative_to).")
-@click.option("--no-copy-sources", is_flag=True, help="Use -no_copy_sources to keep references to existing files.")
+@click.option("--out", "out_tcl", type=click.Path(path_type=Path), default=Path("project.tcl"), show_default=True)
+@click.option("--rel-to", "rel_to", type=click.Path(path_type=Path), default=Path("."), show_default=True)
+@click.option("--no-copy-sources", is_flag=True)
+@click.option("--keep-dcp", is_flag=True)
 @click.pass_context
-def export_tcl_cmd(ctx, out_tcl: Path, rel_to: Optional[Path], no_copy_sources: bool):
-    """Write a reproducible project Tcl (uses write_project_tcl, excluding .dcp files)."""
-    xpr = find_xpr(ctx.obj["proj_hint"])
+def export_tcl_cmd(ctx, out_tcl: Path, rel_to: Path, no_copy_sources: bool, keep_dcp: bool):
+    import re
+    xpr = find_xpr(ctx.obj["proj_hint"], ctx.obj["proj_dir"])
 
-    flags = ["-force", "-all_properties"]
-    if rel_to:
-        flags += ["-paths_relative_to", str(rel_to.resolve())]
-    if no_copy_sources:
-        flags += ["-no_copy_sources"]
+    flags = ["-force", "-all_properties", "-paths_relative_to", str(rel_to.resolve())]
+    if no_copy_sources: flags += ["-no_copy_sources"]
     flags_str = " ".join(flags)
 
-    # Tcl prelude
     tcl = make_prelude_open_project(xpr)
-
-    # 🧹 Remove any DCP/imported files from the project before writing
-    tcl += r"""
-puts "Cleaning imported DCP/EDIF files before export..."
-set to_remove [list]
+    if not keep_dcp:
+        tcl += r"""
+# clear incremental checkpoints on runs and steps
+foreach r [get_runs] {
+  foreach p {
+    incremental_checkpoint
+    STEPS.SYNTH_DESIGN.ARGS.INCREMENTAL_CHECKPOINT
+    STEPS.OPT_DESIGN.ARGS.INCREMENTAL_CHECKPOINT
+    STEPS.PLACE_DESIGN.ARGS.INCREMENTAL_CHECKPOINT
+    STEPS.PHYS_OPT_DESIGN.ARGS.INCREMENTAL_CHECKPOINT
+    STEPS.ROUTE_DESIGN.ARGS.INCREMENTAL_CHECKPOINT
+  } {
+    catch { reset_property $p $r }
+    catch { set_property $p {} $r }
+  }
+}
+foreach fs [get_filesets *] {
+  catch { reset_property incremental_checkpoint $fs }
+  catch { set_property incremental_checkpoint {} $fs }
+}
+# drop imported artifacts (memory only)
+set _rm {}
 foreach f [get_files -all] {
-    if {[string match *.dcp $f] || [string match *.edif $f] || [string match *imports/* $f]} {
-        lappend to_remove $f
-    }
+  if {[string match *.dcp $f] || [string match *.edif $f] || [string match *imports/* $f]} {
+    lappend _rm $f
+  }
 }
-if {[llength $to_remove]} {
-    puts "Removing [llength $to_remove] imported files temporarily..."
-    remove_files -quiet $to_remove
-}
-
-file mkdir [file dirname {""" + str(out_tcl.resolve()) + r"""}]
-write_project_tcl """ + flags_str + " " + tcl_quote(out_tcl.resolve()) + r"""
-puts "Project Tcl written successfully."
-
-# Restore project (if needed)
+if {[llength $_rm]} { remove_files -quiet $_rm }
+"""
+    tcl += f"""
+file mkdir [file dirname {tcl_quote(out_tcl.resolve())}]
+write_project_tcl {flags_str} {tcl_quote(out_tcl.resolve())}
 close_project
 """
     code = run_vivado_tcl(tcl, settings=ctx.obj["settings"], vivado=ctx.obj["vivado"], quiet=ctx.obj["quiet"])
+
+    if code == 0 and out_tcl.exists():
+        txt = out_tcl.read_text()
+
+        # 1) Make the original-project root portable (this script uses orig_proj_dir, not origin_dir)
+        #    Example line in your file:
+        #    set orig_proj_dir "[file normalize "$origin_dir/"]"
+        txt = re.sub(
+            r'(?m)^set\s+orig_proj_dir\s+.*$',
+            'set orig_proj_dir "[file normalize [pwd]/]"',
+            txt
+        )
+
+        # 2) (Optional) if some Vivado versions still emit set origin_dir ... keep this too
+        txt = re.sub(
+            r'(?m)^set\s+origin_dir\s+.*$',
+            'set origin_dir [file normalize [pwd]]',
+            txt
+        )
+
+        # 3) Nuke any incremental checkpoint or imports references (belt & suspenders)
+        txt = re.sub(r'(?mi)^.*incremental_checkpoint.*$', '', txt)
+        txt = re.sub(r'(?m)^.*utils_1/imports/.*$',        '', txt)
+
+        # 4) Clean up extra blank lines
+        txt = re.sub(r'\n{3,}', '\n\n', txt)
+
+        out_tcl.write_text(txt)
+
     if code == 0 and not ctx.obj["quiet"]:
-        click.echo(f"Wrote {out_tcl}.")
+        click.echo(f"Wrote {out_tcl} (from {xpr.parent.name}/).")
     raise SystemExit(code)
 
 
 @cli.command("import-tcl")
 @click.argument("project_tcl", type=click.Path(path_type=Path, exists=True))
-@click.option("--workdir", type=click.Path(path_type=Path), help="cd into this dir before sourcing TCL.")
-@click.option("--force", is_flag=True, help="Force overwrite existing project (inject -force).")
+@click.option("--workdir", type=click.Path(path_type=Path), help="cd before sourcing TCL.")
+@click.option("--force", is_flag=True, help="Overwrite existing project.")
+@click.option("--wipe", is_flag=True, help="Delete the project_dir before import.")
 @click.pass_context
-def import_tcl_cmd(ctx, project_tcl: Path, workdir: Optional[Path], force: bool):
-    pre = ""
-    if workdir:
-        pre = f"cd {tcl_quote(Path(workdir).resolve())}\n"
+def import_tcl_cmd(ctx, project_tcl: Path, workdir: Optional[Path], force: bool, wipe: bool):
+    import re, tempfile, shutil
+    proj_dir = (ctx.obj["proj_dir"]).resolve()
+    proj_dir.mkdir(parents=True, exist_ok=True)
+
+    if wipe and proj_dir.exists():
+        shutil.rmtree(proj_dir, ignore_errors=True)
+        proj_dir.mkdir(parents=True, exist_ok=True)
 
     src = Path(project_tcl).read_text()
 
-    import re
-    # 1) Normalize create_project to use '.' as the directory
-    #    Typical export is: create_project <name> <dir> <opts...>
-    #    Replace the second positional arg with '.'
-    src = re.sub(r'(?m)^(\\s*create_project\\s+[^\\s]+)\\s+[^\\s]+', r'\\1 .', src, count=1)
+    
+    # 1) Re-point the project directory argument in 'create_project'
+    #    Match: <spaces>create_project <NAME> <DIR> <rest...>
+    #    Keep NAME & rest, replace only <DIR>.
+    proj_dir_abs = (ctx.obj["proj_dir"]).resolve()
+    create_proj_re = re.compile(r'(?m)^(?P<prefix>\s*create_project\s+\S+)\s+(?P<dir>\S+)(?P<rest>.*)$')
+    def _replace_proj_dir(m):
+        return f'{m.group("prefix")} ' + "{" + str(proj_dir_abs) + "}" + m.group("rest")
+    src, n = create_proj_re.subn(_replace_proj_dir, src, count=1)
 
-    # 2) Inject -force if requested (and missing)
+    # Make original-project root portable (this file uses orig_proj_dir)
+    src = re.sub(
+        r'(?m)^set\\s+orig_proj_dir\\s+.*$',
+        'set orig_proj_dir "[file normalize [pwd]/]"',
+        src
+    )
+
+    # (Optional) Some Vivado scripts also have set origin_dir; normalize it too
+    src = re.sub(
+        r'(?m)^set\\s+origin_dir\\s+.*$',
+        'set origin_dir [file normalize [pwd]]',
+        src
+    )
+
+    # Inject -force if requested (keeps your existing code)
     if force:
         def add_force(m):
             line = m.group(0)
             return line if "-force" in line else line.replace("create_project", "create_project -force", 1)
-        src = re.sub(r'(?m)^\\s*create_project\\b[^\n]*', add_force, src, count=1)
+        src = re.sub(r'(?m)^\\s*create_project\\b[^\\n]*', add_force, src, count=1)
 
-    # (Optional) make origin_dir portable if present
-    src = re.sub(r'(?m)^set\\s+origin_dir\\s+.*$', 'set origin_dir [file normalize [pwd]]', src)
-
-    # Write to temp and source it
-    import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".tcl", delete=False) as tf:
         tf.write(src)
         patched = Path(tf.name)
 
-    tcl = pre + f"source {tcl_quote(patched.resolve())}\n"
+    pre = ""
+    if workdir:
+        pre = f"cd {tcl_quote(Path(workdir).resolve())}\n"
+    tcl = pre + f"source {tcl_quote(patched)}\n"
     code = run_vivado_tcl(tcl, settings=ctx.obj["settings"], vivado=ctx.obj["vivado"], quiet=ctx.obj["quiet"])
     try:
         patched.unlink(missing_ok=True)

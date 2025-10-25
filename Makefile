@@ -18,10 +18,14 @@ SHELL := /usr/bin/bash
 .ONESHELL:
 
 # Detect project (expects exactly one .xpr in cwd)
-XPR    := $(firstword $(wildcard *.xpr))
+PROJECT_TCL := project.tcl
+PROJECT_DIR := project_files
+VPROJ       := scripts/vproj
+SETTINGS_OPT := $(if $(wildcard $(VIVADO_SETTINGS)),--settings "$(VIVADO_SETTINGS)",)
+
+XPR    := $(firstword $(wildcard $(PROJECT_DIR)/*.xpr))
 PROJ   := $(basename $(notdir $(XPR)))
 RUNDIR := $(PROJ).runs
-PROJECT_TCL := project.tcl
 
 # Common log/report paths
 TOPLOG    := vivado.log
@@ -109,13 +113,13 @@ import-tcl:
 		exit 1; \
 	fi
 	@echo "==> Importing Vivado project from $(PROJECT_TCL)"
-	scripts/vproj --settings "$(VIVADO_SETTINGS)" import-tcl "$(PROJECT_TCL)"
+	$(VPROJ) $(SETTINGS_OPT) --proj-dir $(PROJECT_DIR) import-tcl --force $(PROJECT_TCL)
 	@echo "==> Vivado project recreated in $(PROJECT_DIR)"
 
 export-tcl:
 	@if [ -f "$(XPR)" ]; then \
 		echo "Exporting $(PROJECT_TCL)"; \
-		scripts/vproj --settings "$(VIVADO_SETTINGS)" --proj $(XPR) export-tcl --out $(PROJECT_TCL) --rel-to . --no-copy-sources; \
+		$(VPROJ) $(SETTINGS_OPT) --proj-dir $(PROJECT_DIR) export-tcl --out $(PROJECT_TCL) --rel-to . --no-copy-sources
 	else \
 		echo "No project found."; \
 	fi

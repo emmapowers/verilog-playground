@@ -3,6 +3,7 @@
 # ============================================================
 
 # Vivado project files and build artefacts
+project_files/
 *.xpr
 *.xml
 *.jou
