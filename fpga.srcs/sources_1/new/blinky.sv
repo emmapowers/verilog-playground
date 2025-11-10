@@ -1,10 +1,8 @@
-`timescale 1ns / 1ps
-
 `include "config.svh"
 
 module blinky #(
-    int unsigned PeriodMs  = 1000,
-    int unsigned OnTimeMs = Period / 2  // 50 Mhz
+    int unsigned PeriodMs = 1000,
+    int unsigned OnTimeMs = PeriodMs / 2  // 50 Mhz
 ) (
     input  logic clk,
     input  logic reset,

@@ -62,4 +62,9 @@ project_files/
 !**/*.py
 !**/*.sh
 !**/Makefile
-!**/.gitignore
+!**/.gitignore# pixi environments
+.pixi/*
+!.pixi/config.toml
+tests/.output
+tests/.build
+__pycache__
