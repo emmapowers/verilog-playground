@@ -1,0 +1,110 @@
+"""Export project to TCL command."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Optional
+
+import click
+
+from .vivado import (
+    find_xpr,
+    make_epilogue_close_project,
+    make_prelude_open_project,
+    run_vivado_tcl_auto,
+    tcl_quote,
+)
+
+
+def export_tcl_cmd(
+    out_tcl: Path,
+    rel_to: Path,
+    no_copy_sources: bool,
+    keep_dcp: bool,
+    proj_hint: Optional[Path],
+    proj_dir: Optional[Path],
+    settings: Optional[Path],
+    quiet: bool,
+    batch: bool = False,
+    gui: bool = False,
+    daemon: bool = False,
+) -> int:
+    """Export project to a TCL script."""
+    xpr = find_xpr(proj_hint, proj_dir)
+
+    flags = ["-force", "-all_properties", "-paths_relative_to", str(rel_to.resolve())]
+    if no_copy_sources:
+        flags += ["-no_copy_sources"]
+    flags_str = " ".join(flags)
+
+    tcl = make_prelude_open_project(xpr)
+    if not keep_dcp:
+        tcl += r"""
+# clear incremental checkpoints on runs and steps
+foreach r [get_runs] {
+  foreach p {
+    incremental_checkpoint
+    STEPS.SYNTH_DESIGN.ARGS.INCREMENTAL_CHECKPOINT
+    STEPS.OPT_DESIGN.ARGS.INCREMENTAL_CHECKPOINT
+    STEPS.PLACE_DESIGN.ARGS.INCREMENTAL_CHECKPOINT
+    STEPS.PHYS_OPT_DESIGN.ARGS.INCREMENTAL_CHECKPOINT
+    STEPS.ROUTE_DESIGN.ARGS.INCREMENTAL_CHECKPOINT
+  } {
+    catch { reset_property $p $r }
+    catch { set_property $p {} $r }
+  }
+}
+foreach fs [get_filesets *] {
+  catch { reset_property incremental_checkpoint $fs }
+  catch { set_property incremental_checkpoint {} $fs }
+}
+# drop imported artifacts (memory only)
+set _rm {}
+foreach f [get_files -all] {
+  if {[string match *.dcp $f] || [string match *.edif $f] || [string match *imports/* $f]} {
+    lappend _rm $f
+  }
+}
+if {[llength $_rm]} { remove_files -quiet $_rm }
+"""
+    tcl += f"""
+file mkdir [file dirname {tcl_quote(out_tcl.resolve())}]
+write_project_tcl {flags_str} {tcl_quote(out_tcl.resolve())}
+""" + make_epilogue_close_project()
+
+    code = run_vivado_tcl_auto(
+        tcl, proj_dir=proj_dir, settings=settings, quiet=quiet,
+        batch=batch, gui=gui, daemon=daemon
+    )
+
+    if code == 0 and out_tcl.exists():
+        txt = out_tcl.read_text()
+
+        # Make the original-project root portable
+        txt = re.sub(
+            r'(?m)^set\s+orig_proj_dir\s+.*$',
+            'set orig_proj_dir "[file normalize [pwd]/]"',
+            txt,
+        )
+
+        # Some Vivado versions emit set origin_dir; normalize it too
+        txt = re.sub(
+            r'(?m)^set\s+origin_dir\s+.*$',
+            'set origin_dir [file normalize [pwd]]',
+            txt,
+        )
+
+        # Nuke any incremental checkpoint or imports references
+        txt = re.sub(r'(?mi)^.*incremental_checkpoint.*$', '', txt)
+        txt = re.sub(r'(?m)^.*utils_1/imports/.*$', '', txt)
+
+        # Clean up extra blank lines
+        txt = re.sub(r'\n{3,}', '\n\n', txt)
+
+        out_tcl.write_text(txt)
+
+    if code == 0 and not quiet:
+        click.echo(f"Wrote {out_tcl} (from {xpr.parent.name}/).")
+
+    return code

@@ -19,6 +19,7 @@ project_files/
 *.backup/
 *.tmp/
 *.vivado_lock
+.vproj-port
 *.webtalk/
 *.gen/
 *.hw/

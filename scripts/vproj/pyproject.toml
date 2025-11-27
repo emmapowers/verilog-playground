@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vproj"
+version = "0.1.0"
+description = "Vivado project manager CLI"
+requires-python = ">=3.10"
+dependencies = ["click>=8.0"]
+
+[project.scripts]
+vproj = "vproj.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vproj"]
