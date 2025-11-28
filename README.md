@@ -23,23 +23,24 @@ project.tcl          # Vivado project definition
 ## Quick Start
 
 ```bash
-# Install dependencies
+# Install dependencies and enter shell
 pixi install
+pixi shell
 
 # Import Vivado project from TCL
-pixi run vproj import-tcl project.tcl
+vproj import-tcl project.tcl
 
 # List project files
-pixi run vproj ls
+vproj ls
 
 # Lint/syntax check
-pixi run vproj check
+vproj check
 
 # Build bitstream
-pixi run vproj build
+vproj build
 
 # Program FPGA
-pixi run vproj program
+vproj program
 ```
 
 ## vproj
@@ -77,9 +78,9 @@ pixi run vproj program
 Start a persistent Vivado process to eliminate startup overhead (~15s per command → instant):
 
 ```bash
-pixi run vproj server start   # Start server
-pixi run vproj ls             # Instant
-pixi run vproj server stop    # Stop when done
+vproj server start   # Start server
+vproj ls             # Instant
+vproj server stop    # Stop when done
 ```
 
 ### Vivado Settings
@@ -87,7 +88,7 @@ pixi run vproj server stop    # Stop when done
 If Vivado isn't in your PATH, pass the settings file:
 
 ```bash
-pixi run vproj --settings ~/xilinx/2025.1/Vivado/settings64.sh build
+vproj --settings ~/xilinx/2025.1/Vivado/settings64.sh build
 ```
 
 ## Testing
@@ -95,8 +96,8 @@ pixi run vproj --settings ~/xilinx/2025.1/Vivado/settings64.sh build
 Tests use cocotb + verilator + pytest:
 
 ```bash
-pixi run pytest                          # Run all tests
-pixi run pytest tests/test_module.py     # Run specific test
+pytest                          # Run all tests
+pytest tests/test_module.py     # Run specific test
 ```
 
 ## License
