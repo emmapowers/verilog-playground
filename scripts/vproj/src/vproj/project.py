@@ -25,8 +25,13 @@ def list_cmd(
     batch: bool = False,
     gui: bool = False,
     daemon: bool = False,
-) -> int:
-    """List files in sources_1, constrs_1, and sim_1."""
+    return_data: bool = False,
+) -> int | list[tuple[str, str, str]]:
+    """List files in sources_1, constrs_1, and sim_1.
+
+    Args:
+        return_data: If True, return list of (fileset, path, type) tuples instead of exit code.
+    """
     xpr = find_xpr(proj_hint, proj_dir)
     tcl = (
         make_smart_open(xpr)
@@ -38,20 +43,34 @@ foreach fs [list sources_1 constrs_1 sim_1] {
   foreach f [get_files -of_objects $fsobj] {
     set p [get_property NAME $f]
     set t [get_property FILE_TYPE $f]
-    lappend _vproj_result "$fs|$p|$t"
+    puts "FILE|$fs|$p|$t"
   }
 }
-set ::_vproj_return [join $_vproj_result "\n"]
 """
         + make_smart_close()
-        + r"""
-set ::_vproj_return
-"""
     )
-    return run_vivado_tcl_auto(
-        tcl, proj_dir=proj_dir, settings=settings, quiet=quiet,
-        batch=batch, gui=gui, daemon=daemon
-    )
+
+    if return_data:
+        result = run_vivado_tcl_auto(
+            tcl, proj_dir=proj_dir, settings=settings, quiet=True,
+            batch=batch, gui=gui, daemon=daemon, return_output=True
+        )
+        code, output = result
+        if code != 0:
+            return []
+
+        files = []
+        for line in output.splitlines():
+            if line.startswith("FILE|"):
+                parts = line[5:].split("|", 2)
+                if len(parts) == 3:
+                    files.append((parts[0], parts[1], parts[2]))
+        return files
+    else:
+        return run_vivado_tcl_auto(
+            tcl, proj_dir=proj_dir, settings=settings, quiet=quiet,
+            batch=batch, gui=gui, daemon=daemon
+        )
 
 
 def _add_files_to_fileset(
@@ -428,9 +447,6 @@ def get_include_dirs(
 
     Returns list of Path objects, empty list on error.
     """
-    from io import StringIO
-    import sys
-
     xpr = find_xpr(proj_hint, proj_dir)
     tcl = (
         make_smart_open(xpr)
@@ -443,30 +459,160 @@ foreach d $inc_dirs {
         + make_smart_close()
     )
 
-    # Capture output
-    old_stdout = sys.stdout
-    sys.stdout = captured = StringIO()
+    result = run_vivado_tcl_auto(
+        tcl, proj_dir=proj_dir, settings=settings, quiet=True,
+        batch=batch, gui=gui, daemon=daemon, return_output=True
+    )
 
-    try:
-        code = run_vivado_tcl_auto(
-            tcl, proj_dir=proj_dir, settings=settings, quiet=True,
-            batch=batch, gui=gui, daemon=daemon
-        )
-    finally:
-        sys.stdout = old_stdout
+    # Handle return value (code, output) tuple
+    code, output = result
 
     if code != 0:
         return []
 
     # Parse output
     include_dirs = []
-    for line in captured.getvalue().splitlines():
+    for line in output.splitlines():
         if line.startswith("INCLUDE|"):
             path_str = line[8:]  # Strip "INCLUDE|"
             if path_str:
                 include_dirs.append(Path(path_str))
 
     return include_dirs
+
+
+# --- Top module management ---
+
+
+def get_top_module(
+    proj_hint: Optional[Path],
+    proj_dir: Optional[Path],
+    settings: Optional[Path],
+    batch: bool = False,
+    gui: bool = False,
+    daemon: bool = False,
+) -> Optional[str]:
+    """Get top module name from project."""
+    xpr = find_xpr(proj_hint, proj_dir)
+    tcl = (
+        make_smart_open(xpr)
+        + """
+puts "TOP|[get_property TOP [get_filesets sources_1]]"
+"""
+        + make_smart_close()
+    )
+
+    result = run_vivado_tcl_auto(
+        tcl, proj_dir=proj_dir, settings=settings, quiet=True,
+        batch=batch, gui=gui, daemon=daemon, return_output=True
+    )
+
+    code, output = result
+    if code != 0:
+        return None
+
+    for line in output.splitlines():
+        if line.startswith("TOP|"):
+            return line[4:].strip() or None
+
+    return None
+
+
+def set_top_module(
+    module: str,
+    proj_hint: Optional[Path],
+    proj_dir: Optional[Path],
+    settings: Optional[Path],
+    quiet: bool,
+    batch: bool = False,
+    gui: bool = False,
+    daemon: bool = False,
+) -> int:
+    """Set top module for project."""
+    xpr = find_xpr(proj_hint, proj_dir)
+    tcl = (
+        make_smart_open(xpr)
+        + f"""
+set_property TOP {module} [get_filesets sources_1]
+puts "TOP set to: {module}"
+"""
+        + make_smart_close()
+    )
+
+    if not quiet:
+        click.echo(f"==> Setting top module to: {module}")
+
+    return run_vivado_tcl_auto(
+        tcl, proj_dir=proj_dir, settings=settings, quiet=quiet,
+        batch=batch, gui=gui, daemon=daemon
+    )
+
+
+def get_hierarchy(
+    proj_hint: Optional[Path],
+    proj_dir: Optional[Path],
+    settings: Optional[Path],
+    batch: bool = False,
+    gui: bool = False,
+    daemon: bool = False,
+    include_nets: bool = False,
+) -> list[tuple[str, str, str]]:
+    """Get module hierarchy from elaborated design (requires Vivado).
+
+    Args:
+        include_nets: If True, include all cells/nets. If False (default),
+                      only include module instances.
+
+    Returns list of (instance_name, parent, module_type) tuples.
+    """
+    xpr = find_xpr(proj_hint, proj_dir)
+
+    if include_nets:
+        # Get all cells including nets/primitives
+        filter_cmd = "get_cells -hierarchical -quiet"
+    else:
+        # Only get module instances (non-primitive cells)
+        filter_cmd = "get_cells -hierarchical -quiet -filter {IS_PRIMITIVE == false}"
+
+    tcl = (
+        make_smart_open(xpr)
+        + f"""
+# Get top module
+set top [get_property TOP [get_filesets sources_1]]
+puts "HIER_TOP|$top"
+
+# Elaborate design to get hierarchy
+synth_design -rtl -top $top -quiet
+
+# Get cells
+foreach cell [{filter_cmd}] {{
+    set parent [get_property PARENT $cell]
+    set ref [get_property REF_NAME $cell]
+    puts "HIER_CELL|$cell|$parent|$ref"
+}}
+
+close_design -quiet
+"""
+        + make_smart_close()
+    )
+
+    result = run_vivado_tcl_auto(
+        tcl, proj_dir=proj_dir, settings=settings, quiet=True,
+        batch=batch, gui=gui, daemon=daemon, return_output=True
+    )
+
+    code, output = result
+    if code != 0:
+        return []
+
+    cells = []
+    for line in output.splitlines():
+        if line.startswith("HIER_CELL|"):
+            parts = line[10:].split("|", 2)
+            if len(parts) == 3:
+                cells.append((parts[0], parts[1], parts[2]))
+
+    return cells
 
 
 # Re-export for CLI
@@ -482,4 +628,7 @@ __all__ = [
     "include_add_cmd",
     "include_rm_cmd",
     "get_include_dirs",
+    "get_top_module",
+    "set_top_module",
+    "get_hierarchy",
 ]

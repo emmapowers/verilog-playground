@@ -98,6 +98,7 @@ def run_vivado_tcl(
     settings: Optional[Path],
     vivado: str = "vivado",
     quiet: bool = False,
+    return_output: bool = False,
 ) -> int:
     """Write TCL to a temp file and invoke Vivado batch."""
     with tempfile.NamedTemporaryFile("w", suffix=".tcl", delete=False) as tf:
@@ -124,6 +125,8 @@ def run_vivado_tcl(
             )
         if not quiet:
             click.echo(proc.stdout, nl=True)
+        if return_output:
+            return (proc.returncode, proc.stdout)
         return proc.returncode
     finally:
         try:
@@ -141,6 +144,7 @@ def run_vivado_tcl_auto(
     batch: bool = False,
     gui: bool = False,
     daemon: bool = False,
+    return_output: bool = False,
 ) -> int:
     """
     Run TCL code with smart mode selection.
@@ -167,7 +171,7 @@ def run_vivado_tcl_auto(
 
     # Force batch mode
     if batch:
-        return run_vivado_tcl(tcl, settings=settings, quiet=quiet)
+        return run_vivado_tcl(tcl, settings=settings, quiet=quiet, return_output=return_output)
 
     from .daemon import find_server, send_tcl, start_daemon, get_server_script_path
 
@@ -222,7 +226,7 @@ def run_vivado_tcl_auto(
             if not start_daemon(proj_dir=pd, settings=settings, quiet=quiet):
                 if not quiet:
                     click.echo("Failed to start daemon, using batch mode", err=True)
-                return run_vivado_tcl(tcl, settings=settings, quiet=quiet)
+                return run_vivado_tcl(tcl, settings=settings, quiet=quiet, return_output=return_output)
             info = find_server(pd)
 
     # Use server
@@ -230,11 +234,11 @@ def run_vivado_tcl_auto(
         result = send_tcl(tcl, proj_dir=pd)
         if not quiet and result:
             click.echo(result)
-        return 0
+        return (0, result) if return_output else 0
     except Exception as e:
         if not quiet:
             click.echo(f"Server error, falling back to batch: {e}", err=True)
-        return run_vivado_tcl(tcl, settings=settings, quiet=quiet)
+        return run_vivado_tcl(tcl, settings=settings, quiet=quiet, return_output=return_output)
 
 
 def make_smart_open(xpr: Path) -> str:

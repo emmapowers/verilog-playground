@@ -16,6 +16,9 @@ from .project import (
     add_ip_cmd,
     remove_cmd,
     mv_cmd,
+    get_top_module,
+    set_top_module,
+    get_hierarchy,
 )
 from .tcl_export import export_tcl_cmd
 from .tcl_import import import_tcl_cmd
@@ -24,7 +27,58 @@ from .program import program_cmd
 from .clean import clean_cmd
 
 
-@click.group(context_settings=dict(help_option_names=["-h", "--help"]))
+# Command categories for help formatting
+COMMAND_CATEGORIES = {
+    "Project": ["ls", "top", "tree", "add-src", "add-xdc", "add-sim", "add-ip", "rm", "mv", "include"],
+    "Build": ["build", "program", "clean"],
+    "Verify": ["check", "lint", "sim"],
+    "TCL": ["export-tcl", "import-tcl"],
+    "Server": ["server"],
+}
+
+
+class CategorizedGroup(click.Group):
+    """Click group with categorized command listing in help."""
+
+    def format_commands(self, ctx, formatter):
+        """Format commands by category."""
+        commands = []
+        for subcommand in self.list_commands(ctx):
+            cmd = self.get_command(ctx, subcommand)
+            if cmd is None or cmd.hidden:
+                continue
+            commands.append((subcommand, cmd))
+
+        if not commands:
+            return
+
+        # Build category -> commands mapping
+        categorized = {cat: [] for cat in COMMAND_CATEGORIES}
+        uncategorized = []
+
+        for subcommand, cmd in commands:
+            help_text = cmd.get_short_help_str(limit=formatter.width)
+            found = False
+            for cat, cat_commands in COMMAND_CATEGORIES.items():
+                if subcommand in cat_commands:
+                    categorized[cat].append((subcommand, help_text))
+                    found = True
+                    break
+            if not found:
+                uncategorized.append((subcommand, help_text))
+
+        # Write categories
+        for cat, cat_commands in categorized.items():
+            if cat_commands:
+                with formatter.section(cat):
+                    formatter.write_dl(cat_commands)
+
+        if uncategorized:
+            with formatter.section("Other"):
+                formatter.write_dl(uncategorized)
+
+
+@click.group(cls=CategorizedGroup, context_settings=dict(help_option_names=["-h", "--help"]))
 @click.option(
     "--proj",
     "proj_hint",
@@ -38,6 +92,7 @@ from .clean import clean_cmd
     help="settings64.sh to source before invoking Vivado.",
 )
 @click.option("-q", "--quiet", is_flag=True, help="Suppress Vivado stdout.")
+@click.option("--no-color", is_flag=True, help="Disable colored output.")
 @click.option(
     "--proj-dir",
     type=click.Path(path_type=Path),
@@ -67,6 +122,7 @@ def cli(
     settings: Optional[Path],
     proj_dir: Optional[Path],
     quiet: bool,
+    no_color: bool,
     batch: bool,
     gui: bool,
     daemon: bool,
@@ -76,6 +132,7 @@ def cli(
     ctx.obj.update(
         settings=settings,
         quiet=quiet,
+        no_color=no_color,
         proj_hint=proj_hint,
         proj_dir=proj_dir,
         batch=batch,
@@ -87,32 +144,27 @@ def cli(
 # --- File listing ---
 
 
-@cli.command("list")
-@click.pass_context
-def list_(ctx):
-    """List files in sources_1, constrs_1, and sim_1."""
-    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
-    raise SystemExit(
-        list_cmd(
-            ctx.obj["proj_hint"],
-            ctx.obj["proj_dir"],
-            ctx.obj["settings"],
-            ctx.obj["quiet"],
-            batch=ctx.obj["batch"],
-            gui=ctx.obj["gui"],
-            daemon=ctx.obj["daemon"],
-        )
-    )
-
-
-# Alias: ls -> list
 @cli.command("ls")
 @click.pass_context
 def ls_(ctx):
-    """List files in project (alias for 'list')."""
+    """List files in sources_1, constrs_1, and sim_1."""
     check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
-    raise SystemExit(
-        list_cmd(
+
+    no_color = ctx.obj.get("no_color", False)
+
+    # Get top module to highlight it
+    top_module = get_top_module(
+        ctx.obj["proj_hint"],
+        ctx.obj["proj_dir"],
+        ctx.obj["settings"],
+        batch=ctx.obj["batch"],
+        gui=ctx.obj["gui"],
+        daemon=ctx.obj["daemon"],
+    )
+
+    if no_color:
+        # Plain output mode
+        files = list_cmd(
             ctx.obj["proj_hint"],
             ctx.obj["proj_dir"],
             ctx.obj["settings"],
@@ -120,8 +172,169 @@ def ls_(ctx):
             batch=ctx.obj["batch"],
             gui=ctx.obj["gui"],
             daemon=ctx.obj["daemon"],
+            return_data=True,
         )
+
+        if isinstance(files, int):
+            raise SystemExit(files)
+
+        for fileset, path, ftype in files:
+            # Check if this file contains the top module
+            filename = Path(path).stem
+            marker = " [TOP]" if top_module and filename == top_module else ""
+            click.echo(f"{fileset}\t{path}\t{ftype}{marker}")
+
+        raise SystemExit(0)
+    else:
+        # Rich table output
+        from rich.console import Console
+        from rich.table import Table
+
+        files = list_cmd(
+            ctx.obj["proj_hint"],
+            ctx.obj["proj_dir"],
+            ctx.obj["settings"],
+            ctx.obj["quiet"],
+            batch=ctx.obj["batch"],
+            gui=ctx.obj["gui"],
+            daemon=ctx.obj["daemon"],
+            return_data=True,
+        )
+
+        if isinstance(files, int):
+            # Error occurred
+            raise SystemExit(files)
+
+        console = Console()
+        table = Table(show_header=True)
+        table.add_column("Fileset", style="cyan")
+        table.add_column("File")
+        table.add_column("Type", style="dim")
+
+        for fileset, path, ftype in files:
+            # Check if this file contains the top module
+            filename = Path(path).stem
+            if top_module and filename == top_module:
+                # Highlight the top module file with marker at start
+                table.add_row(f"[bold green]{fileset}[/bold green]", f"[bold green]{path}[/bold green]", f"[bold green]{ftype} *[/bold green]")
+            else:
+                table.add_row(fileset, path, ftype)
+
+        console.print(table)
+        raise SystemExit(0)
+
+
+@cli.command("top")
+@click.argument("module", required=False)
+@click.pass_context
+def top_(ctx, module):
+    """Get or set the top module.
+
+    With no argument, prints the current top module.
+    With MODULE argument, sets it as the new top module.
+    """
+    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
+
+    if module is None:
+        # Get current top module
+        top = get_top_module(
+            ctx.obj["proj_hint"],
+            ctx.obj["proj_dir"],
+            ctx.obj["settings"],
+            batch=ctx.obj["batch"],
+            gui=ctx.obj["gui"],
+            daemon=ctx.obj["daemon"],
+        )
+        if top:
+            click.echo(top)
+            raise SystemExit(0)
+        else:
+            click.echo("No top module set", err=True)
+            raise SystemExit(1)
+    else:
+        # Set top module
+        raise SystemExit(
+            set_top_module(
+                module,
+                ctx.obj["proj_hint"],
+                ctx.obj["proj_dir"],
+                ctx.obj["settings"],
+                ctx.obj["quiet"],
+                batch=ctx.obj["batch"],
+                gui=ctx.obj["gui"],
+                daemon=ctx.obj["daemon"],
+            )
+        )
+
+
+@cli.command("tree")
+@click.option("--nets", is_flag=True, help="Include all nets/primitives (verbose).")
+@click.pass_context
+def tree_(ctx, nets):
+    """Show module instantiation hierarchy.
+
+    Elaborates the design and shows which modules instantiate which.
+    Use --nets to include all nets and primitives.
+    """
+    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
+
+    from rich.console import Console
+    from rich.tree import Tree
+
+    # Get hierarchy data
+    cells = get_hierarchy(
+        ctx.obj["proj_hint"],
+        ctx.obj["proj_dir"],
+        ctx.obj["settings"],
+        batch=ctx.obj["batch"],
+        gui=ctx.obj["gui"],
+        daemon=ctx.obj["daemon"],
+        include_nets=nets,
     )
+
+    if not cells:
+        click.echo("Could not get module hierarchy (elaboration may have failed)", err=True)
+        raise SystemExit(1)
+
+    # Get top module
+    top_module = get_top_module(
+        ctx.obj["proj_hint"],
+        ctx.obj["proj_dir"],
+        ctx.obj["settings"],
+        batch=ctx.obj["batch"],
+        gui=ctx.obj["gui"],
+        daemon=ctx.obj["daemon"],
+    )
+
+    # Build hierarchy tree
+    # cells is list of (instance_name, parent, module_type)
+    # Build parent->children mapping
+    children: dict[str, list[tuple[str, str]]] = {}  # parent -> [(instance, module_type)]
+    for instance, parent, module_type in cells:
+        if parent not in children:
+            children[parent] = []
+        children[parent].append((instance, module_type))
+
+    console = Console()
+
+    # Create rich tree
+    tree = Tree(f"[bold]{top_module or 'top'}[/bold]")
+
+    def add_children(tree_node, parent_path: str):
+        """Recursively add children to tree."""
+        if parent_path in children:
+            for instance, module_type in sorted(children[parent_path]):
+                child_path = f"{parent_path}/{instance}" if parent_path else instance
+                # Format: instance_name (module_type)
+                label = f"{instance} [dim]({module_type})[/dim]"
+                child_node = tree_node.add(label)
+                add_children(child_node, child_path)
+
+    # Start from empty parent (top-level instances)
+    add_children(tree, "")
+
+    console.print(tree)
+    raise SystemExit(0)
 
 
 # --- Add commands ---
@@ -210,35 +423,12 @@ def add_ip(ctx, files):
 # --- Remove command ---
 
 
-@cli.command("remove")
-@click.argument("files", type=click.Path(path_type=Path), nargs=-1, required=True)
-@click.option("-r", "--recursive", is_flag=True, help="Remove folder contents recursively.")
-@click.pass_context
-def remove(ctx, files, recursive):
-    """Remove files from project (does NOT delete from disk)."""
-    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
-    raise SystemExit(
-        remove_cmd(
-            files,
-            recursive,
-            ctx.obj["proj_hint"],
-            ctx.obj["proj_dir"],
-            ctx.obj["settings"],
-            ctx.obj["quiet"],
-            batch=ctx.obj["batch"],
-            gui=ctx.obj["gui"],
-            daemon=ctx.obj["daemon"],
-        )
-    )
-
-
-# Alias: rm -> remove
 @cli.command("rm")
 @click.argument("files", type=click.Path(path_type=Path), nargs=-1, required=True)
 @click.option("-r", "--recursive", is_flag=True, help="Remove folder contents recursively.")
 @click.pass_context
 def rm_(ctx, files, recursive):
-    """Remove files from project (alias for 'remove')."""
+    """Remove files from project (does NOT delete from disk)."""
     check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
     raise SystemExit(
         remove_cmd(
@@ -356,24 +546,26 @@ def import_tcl(ctx, project_tcl, workdir, force, wipe):
 @click.option("--force", is_flag=True, help="Force full rebuild (reset runs).")
 @click.option("--synth-only", is_flag=True, help="Stop after synthesis.")
 @click.option("--no-bit", is_flag=True, help="Skip bitstream generation.")
+@click.option("--program", "do_program", is_flag=True, help="Program FPGA after build.")
 @click.pass_context
-def build(ctx, jobs, force, synth_only, no_bit):
+def build(ctx, jobs, force, synth_only, no_bit, do_program):
     """Build bitstream (synthesis + implementation)."""
     check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
-    raise SystemExit(
-        build_cmd(
-            jobs,
-            ctx.obj["proj_dir"],
-            ctx.obj["settings"],
-            ctx.obj["quiet"],
-            batch=ctx.obj["batch"],
-            gui=ctx.obj["gui"],
-            daemon=ctx.obj["daemon"],
-            force=force,
-            synth_only=synth_only,
-            no_bit=no_bit,
-        )
+    result = build_cmd(
+        jobs,
+        ctx.obj["proj_dir"],
+        ctx.obj["settings"],
+        ctx.obj["quiet"],
+        batch=ctx.obj["batch"],
+        gui=ctx.obj["gui"],
+        daemon=ctx.obj["daemon"],
+        force=force,
+        synth_only=synth_only,
+        no_bit=no_bit,
+        do_program=do_program,
     )
+
+    raise SystemExit(result)
 
 
 # --- Program command ---
@@ -456,7 +648,7 @@ def sim(ctx, testbench, use_xsim, use_iverilog, use_verilator, use_fst, output, 
               help="Add include directory (can specify multiple times).")
 @click.pass_context
 def check(ctx, files, use_verilator, use_iverilog, include_dirs):
-    """Fast syntax/lint check (uses project include paths)."""
+    """Lint/syntax check with Verilator or Icarus Verilog."""
     from .sim import check_cmd
 
     raise SystemExit(
@@ -472,6 +664,8 @@ def check(ctx, files, use_verilator, use_iverilog, include_dirs):
             batch=ctx.obj["batch"],
             gui=ctx.obj["gui"],
             daemon=ctx.obj["daemon"],
+            wall=True,
+            no_color=ctx.obj.get("no_color", False),
         )
     )
 
@@ -485,9 +679,9 @@ def include():
     pass
 
 
-@include.command("list")
+@include.command("ls")
 @click.pass_context
-def include_list(ctx):
+def include_ls(ctx):
     """List include directories in the project."""
     from .project import include_list_cmd
 

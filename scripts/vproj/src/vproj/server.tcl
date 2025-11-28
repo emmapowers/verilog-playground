@@ -97,14 +97,65 @@ proc handle_client {client} {
         return
     }
 
-    # Execute the TCL command
-    if {[catch {uplevel #0 $cmd} result]} {
+    # Execute the TCL command with stdout capture
+    # Override puts to capture output to client
+    set ::_vproj_client $client
+    set ::_vproj_captured {}
+
+    # Save original puts and create capturing version
+    rename puts _vproj_orig_puts
+    proc puts {args} {
+        # Parse puts arguments: puts ?-nonewline? ?channelId? string
+        set nonewline 0
+        set channel stdout
+        set str ""
+
+        if {[llength $args] == 1} {
+            set str [lindex $args 0]
+        } elseif {[llength $args] == 2} {
+            if {[lindex $args 0] eq "-nonewline"} {
+                set nonewline 1
+                set str [lindex $args 1]
+            } else {
+                set channel [lindex $args 0]
+                set str [lindex $args 1]
+            }
+        } elseif {[llength $args] == 3} {
+            set nonewline 1
+            set channel [lindex $args 1]
+            set str [lindex $args 2]
+        }
+
+        # Capture stdout, pass through others
+        if {$channel eq "stdout"} {
+            lappend ::_vproj_captured $str
+        } else {
+            if {$nonewline} {
+                _vproj_orig_puts -nonewline $channel $str
+            } else {
+                _vproj_orig_puts $channel $str
+            }
+        }
+    }
+
+    set error_occurred [catch {uplevel #0 $cmd} result]
+
+    # Restore original puts
+    rename puts {}
+    rename _vproj_orig_puts puts
+
+    if {$error_occurred} {
         puts $client "ERROR"
         foreach line [split $result "\n"] {
             puts $client $line
         }
     } else {
         puts $client "OK"
+        # Send captured stdout first
+        foreach line $::_vproj_captured {
+            puts $client $line
+        }
+        # Then send return value if any
         if {$result ne ""} {
             foreach line [split $result "\n"] {
                 puts $client $line

@@ -7,7 +7,7 @@ name = "vproj"
 version = "0.1.0"
 description = "Vivado project manager CLI"
 requires-python = ">=3.10"
-dependencies = ["click>=8.0"]
+dependencies = ["click>=8.0", "rich>=13.0"]
 
 [project.scripts]
 vproj = "vproj.cli:main"

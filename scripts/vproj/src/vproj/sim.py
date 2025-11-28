@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Tuple
 
 import click
+from rich.console import Console
+from rich.live import Live
+from rich.markup import escape
 
+from .progress import ProgressTable, StageStatus
 from .vivado import (
     PROJECT_DIR_DEFAULT,
     find_xpr,
@@ -18,6 +24,138 @@ from .vivado import (
     run_vivado_tcl_auto,
     tcl_quote,
 )
+
+
+@dataclass
+class LintMessage:
+    """A parsed lint message."""
+    level: str  # "error" or "warning"
+    file: str
+    line: int
+    message: str
+
+
+def _parse_verilator_output(stderr: str) -> tuple[list[LintMessage], list[str]]:
+    """Parse verilator output into structured messages.
+
+    Returns (messages, raw_lines) where messages are parsed error/warnings
+    and raw_lines is the full output for display.
+    """
+    messages: list[LintMessage] = []
+    raw_lines = stderr.splitlines()
+
+    # Pattern: %Error: /path/file.sv:123:45: Message text
+    # Pattern: %Warning-TYPE: /path/file.sv:123:45: Message text
+    error_pattern = re.compile(r'^%Error(?:-[A-Z0-9_]+)?:\s*([^:]+):(\d+)(?::\d+)?:\s*(.+)$')
+    warning_pattern = re.compile(r'^%Warning-[A-Z0-9_]+:\s*([^:]+):(\d+)(?::\d+)?:\s*(.+)$')
+
+    for line in raw_lines:
+        error_match = error_pattern.match(line)
+        if error_match:
+            messages.append(LintMessage(
+                level="error",
+                file=Path(error_match.group(1)).name,
+                line=int(error_match.group(2)),
+                message=error_match.group(3),
+            ))
+            continue
+
+        warning_match = warning_pattern.match(line)
+        if warning_match:
+            messages.append(LintMessage(
+                level="warning",
+                file=Path(warning_match.group(1)).name,
+                line=int(warning_match.group(2)),
+                message=warning_match.group(3),
+            ))
+
+    return messages, raw_lines
+
+
+def _format_lint_output(stderr: str, use_color: bool) -> tuple[int, int]:
+    """Format and print lint output. Returns (error_count, warning_count)."""
+    from rich.console import Console
+    from rich.markup import escape
+
+    messages, raw_lines = _parse_verilator_output(stderr)
+
+    errors = [m for m in messages if m.level == "error"]
+    warnings = [m for m in messages if m.level == "warning"]
+
+    if use_color:
+        console = Console(stderr=True)
+
+        # Print colorized output
+        for line in raw_lines:
+            escaped_line = escape(line)
+            if line.startswith("%Error"):
+                console.print(f"[bold red]{escaped_line}[/bold red]")
+            elif line.startswith("%Warning"):
+                console.print(f"[yellow]{escaped_line}[/yellow]")
+            elif line.strip().startswith(":") or line.strip().startswith("..."):
+                # Note/context lines
+                console.print(f"[dim]{escaped_line}[/dim]")
+            elif "|" in line and re.match(r'^\s*\d*\s*\|', line):
+                # Source code lines (number | code)
+                console.print(f"[dim]{escaped_line}[/dim]")
+            elif line.strip().startswith("^"):
+                # Pointer lines
+                console.print(f"[dim]{escaped_line}[/dim]")
+            else:
+                console.print(escaped_line)
+
+        # Print summary
+        console.print()
+        if errors or warnings:
+            summary_parts = []
+            if errors:
+                summary_parts.append(f"[bold red]{len(errors)} error{'s' if len(errors) != 1 else ''}[/bold red]")
+            if warnings:
+                summary_parts.append(f"[yellow]{len(warnings)} warning{'s' if len(warnings) != 1 else ''}[/yellow]")
+            console.print(f"[bold]==> Summary: {', '.join(summary_parts)}[/bold]")
+
+            if errors:
+                console.print("\n[bold red]Errors:[/bold red]")
+                for msg in errors:
+                    console.print(f"  [red]{escape(msg.file)}:{msg.line}[/red] {escape(msg.message)}")
+
+            if warnings:
+                console.print("\n[bold yellow]Warnings:[/bold yellow]")
+                for msg in warnings[:10]:  # Limit to first 10
+                    console.print(f"  [yellow]{escape(msg.file)}:{msg.line}[/yellow] {escape(msg.message)}")
+                if len(warnings) > 10:
+                    console.print(f"  [dim]... and {len(warnings) - 10} more[/dim]")
+        else:
+            console.print("[bold green]==> No errors or warnings[/bold green]")
+    else:
+        # Plain output
+        click.echo(stderr, err=True)
+
+        # Print plain summary
+        click.echo()
+        if errors or warnings:
+            summary_parts = []
+            if errors:
+                summary_parts.append(f"{len(errors)} error{'s' if len(errors) != 1 else ''}")
+            if warnings:
+                summary_parts.append(f"{len(warnings)} warning{'s' if len(warnings) != 1 else ''}")
+            click.echo(f"==> Summary: {', '.join(summary_parts)}")
+
+            if errors:
+                click.echo("\nErrors:")
+                for msg in errors:
+                    click.echo(f"  {msg.file}:{msg.line} {msg.message}")
+
+            if warnings:
+                click.echo("\nWarnings:")
+                for msg in warnings[:10]:
+                    click.echo(f"  {msg.file}:{msg.line} {msg.message}")
+                if len(warnings) > 10:
+                    click.echo(f"  ... and {len(warnings) - 10} more")
+        else:
+            click.echo("==> No errors or warnings")
+
+    return len(errors), len(warnings)
 
 
 def _find_tool(name: str) -> Optional[Path]:
@@ -50,11 +188,16 @@ def check_cmd(
     batch: bool = False,
     gui: bool = False,
     daemon: bool = False,
+    wall: bool = False,
+    no_color: bool = False,
 ) -> int:
-    """Fast syntax/lint check without full build.
+    """Fast syntax check without full build.
 
     Default: verilator --lint-only (very fast)
     Fallback: iverilog -t null
+
+    Args:
+        wall: Enable all warnings (-Wall for verilator)
     """
     # Determine which tool to use
     if use_verilator:
@@ -78,14 +221,23 @@ def check_cmd(
     if files:
         file_list = [Path(f) for f in files]
     else:
-        # Get all .v/.sv files from project directory
-        pd = proj_dir or Path(PROJECT_DIR_DEFAULT)
-        # Look in common source locations
-        file_list = []
-        for pattern in ["**/*.sv", "**/*.v"]:
-            file_list.extend(Path(".").glob(pattern))
-        # Filter out testbenches for syntax check by default
-        file_list = [f for f in file_list if "tb" not in f.stem.lower() and "test" not in f.stem.lower()]
+        # Get source files from project
+        from .project import list_cmd as project_list_cmd
+
+        project_files = project_list_cmd(
+            proj_hint, proj_dir, settings, quiet=True,
+            batch=batch, gui=gui, daemon=daemon, return_data=True
+        )
+
+        if isinstance(project_files, int) or not project_files:
+            raise click.ClickException("Could not get project files. Specify files explicitly.")
+
+        # Filter to only HDL source files (not XDC, not sim_1 testbenches)
+        hdl_types = {"SystemVerilog", "Verilog", "Verilog Header", "VHDL"}
+        file_list = [
+            Path(path) for fileset, path, ftype in project_files
+            if ftype in hdl_types and fileset == "sources_1"
+        ]
 
     if not file_list:
         raise click.ClickException("No source files found to check.")
@@ -108,22 +260,48 @@ def check_cmd(
     # Add CLI-specified includes
     all_includes.extend(include_dirs)
 
+    # Get top module from project for verilator
+    top_module: Optional[str] = None
+    try:
+        from .project import get_top_module
+        top_module = get_top_module(
+            proj_hint, proj_dir, settings,
+            batch=batch, gui=gui, daemon=daemon
+        )
+    except Exception:
+        pass
+
     file_args = [str(f.resolve()) for f in file_list]
 
     if not quiet:
         click.echo(f"==> Checking {len(file_list)} files with {tool}")
         if all_includes:
             click.echo(f"    Include paths: {len(all_includes)}")
+        if top_module:
+            click.echo(f"    Top module: {top_module}")
 
     # Build command with include paths
     # Note: verilator requires -Ipath format (no space), iverilog accepts both
     if tool == "verilator":
-        cmd = ["verilator", "--lint-only", "-Wall", "--timing"]
+        cmd = ["verilator", "--lint-only", "--timing", "-sv"]
+        if wall:
+            cmd.append("-Wall")
+        else:
+            # Syntax check only - don't fail on warnings
+            cmd.append("-Wno-fatal")
+        # Pass top module to avoid "multiple top modules" error
+        if top_module:
+            cmd.extend(["--top-module", top_module])
         for inc in all_includes:
             cmd.append(f"-I{inc}")
         cmd.extend(file_args)
     else:  # iverilog
         cmd = ["iverilog", "-t", "null", "-g2012"]
+        if wall:
+            cmd.append("-Wall")
+        # iverilog uses -s for top module
+        if top_module:
+            cmd.extend(["-s", top_module])
         for inc in all_includes:
             cmd.append(f"-I{inc}")
         cmd.extend(file_args)
@@ -136,9 +314,15 @@ def check_cmd(
         )
         if result.stdout and not quiet:
             click.echo(result.stdout)
+
+        # Format and display lint output with colorization and summary
         if result.stderr:
-            # Verilator/iverilog output warnings/errors to stderr
-            click.echo(result.stderr, err=True)
+            if tool == "verilator" and not quiet:
+                # Use colorized formatter for verilator output
+                _format_lint_output(result.stderr, use_color=not no_color)
+            else:
+                # Plain output for iverilog or quiet mode
+                click.echo(result.stderr, err=True)
 
         if result.returncode == 0:
             if not quiet:
@@ -213,12 +397,14 @@ def sim_cmd(
     # Add CLI-specified includes
     all_includes.extend(include_dirs)
 
+    console = Console()
+
     if not quiet:
-        click.echo(f"==> Running simulation with {backend}")
-        click.echo(f"    Testbench: {testbench}")
-        click.echo(f"    Output: {out_file}")
+        console.print(f"[bold]==> Running simulation with {backend}[/bold]")
+        console.print(f"    Testbench: {escape(str(testbench))}")
+        console.print(f"    Output: {escape(str(out_file))}")
         if all_includes and backend != "xsim":
-            click.echo(f"    Include paths: {len(all_includes)}")
+            console.print(f"    Include paths: {len(all_includes)}")
 
     if backend == "xsim":
         return _sim_xsim(
@@ -226,9 +412,9 @@ def sim_cmd(
             batch=batch, gui=gui, daemon=daemon
         )
     elif backend == "iverilog":
-        return _sim_iverilog(testbench, out_file, use_fst, all_includes, proj_dir, quiet)
+        return _sim_iverilog(testbench, out_file, use_fst, all_includes, proj_dir, quiet, console)
     else:
-        return _sim_verilator(testbench, out_file, all_includes, proj_dir, quiet)
+        return _sim_verilator(testbench, out_file, all_includes, proj_dir, quiet, console)
 
 
 def _sim_xsim(
@@ -278,10 +464,13 @@ def _sim_iverilog(
     include_dirs: List[Path],
     proj_dir: Optional[Path],
     quiet: bool,
+    console: Optional[Console] = None,
 ) -> int:
     """Run simulation with Icarus Verilog."""
     if not _find_tool("iverilog"):
         raise click.ClickException("iverilog not found. Install with: sudo apt install iverilog")
+
+    console = console or Console()
 
     # Gather source files
     sources = []
@@ -307,40 +496,91 @@ def _sim_iverilog(
             compile_cmd.append(f"-I{inc}")
         compile_cmd.extend([str(f) for f in sources])
 
-        if not quiet:
-            click.echo(f"Compiling: {' '.join(compile_cmd[:6])}...")
+        if quiet:
+            # Quiet mode - no progress display
+            result = subprocess.run(compile_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                return result.returncode
 
-        result = subprocess.run(compile_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            click.echo(result.stderr, err=True)
+            vvp_cmd = ["vvp", str(sim_out)]
+            if use_fst:
+                vvp_cmd.append("-fst")
+
+            result = subprocess.run(
+                vvp_cmd,
+                capture_output=True,
+                text=True,
+                env={**subprocess.os.environ, "VCD_FILE": str(output.resolve())},
+            )
             return result.returncode
 
-        # Run simulation
-        vvp_cmd = ["vvp", str(sim_out)]
-        if use_fst:
-            vvp_cmd.append("-fst")
+        # Non-quiet mode - use progress display
+        progress_table = ProgressTable(["Compile", "Simulate"])
+        progress_table.set_active("Compile")
 
-        env = {"VCD_FILE": str(output.resolve())}
+        with Live(progress_table.render(), console=console, refresh_per_second=2) as live:
+            # Compile stage
+            progress_table.update("Compile", StageStatus(
+                name="Compile", progress=50, status="Compiling..."
+            ))
+            live.update(progress_table.render())
 
-        if not quiet:
-            click.echo("Running simulation...")
+            result = subprocess.run(compile_cmd, capture_output=True, text=True)
 
-        result = subprocess.run(
-            vvp_cmd,
-            capture_output=True,
-            text=True,
-            env={**subprocess.os.environ, **env},
-        )
+            if result.returncode != 0:
+                progress_table.update("Compile", StageStatus(
+                    name="Compile", progress=0, status="Failed", errors=1
+                ))
+                progress_table.add_message("[red]==> Compilation failed[/red]")
+                if result.stderr:
+                    for line in result.stderr.strip().splitlines()[:5]:
+                        progress_table.add_message(f"    [dim]{escape(line)}[/dim]")
+                live.update(progress_table.render())
+                return result.returncode
 
-        if result.stdout and not quiet:
-            click.echo(result.stdout)
-        if result.stderr:
-            click.echo(result.stderr, err=True)
+            progress_table.update("Compile", StageStatus(
+                name="Compile", progress=100, status="Complete"
+            ))
+            progress_table.add_message("[green]==> Compilation complete[/green]")
+            live.update(progress_table.render())
 
-        if result.returncode == 0 and not quiet:
-            click.echo(f"==> Waveform: {output}")
+            # Simulate stage
+            progress_table.set_active("Simulate")
+            progress_table.update("Simulate", StageStatus(
+                name="Simulate", progress=50, status="Running..."
+            ))
+            live.update(progress_table.render())
 
-        return result.returncode
+            vvp_cmd = ["vvp", str(sim_out)]
+            if use_fst:
+                vvp_cmd.append("-fst")
+
+            result = subprocess.run(
+                vvp_cmd,
+                capture_output=True,
+                text=True,
+                env={**subprocess.os.environ, "VCD_FILE": str(output.resolve())},
+            )
+
+            if result.returncode != 0:
+                progress_table.update("Simulate", StageStatus(
+                    name="Simulate", progress=0, status="Failed", errors=1
+                ))
+                progress_table.add_message("[red]==> Simulation failed[/red]")
+                if result.stderr:
+                    for line in result.stderr.strip().splitlines()[:5]:
+                        progress_table.add_message(f"    [dim]{escape(line)}[/dim]")
+                live.update(progress_table.render())
+                return result.returncode
+
+            progress_table.update("Simulate", StageStatus(
+                name="Simulate", progress=100, status="Complete"
+            ))
+            progress_table.add_message("[green]==> Simulation complete[/green]")
+            progress_table.add_message(f"    Waveform: {escape(str(output))}")
+            live.update(progress_table.render())
+
+        return 0
 
 
 def _sim_verilator(
@@ -349,10 +589,13 @@ def _sim_verilator(
     include_dirs: List[Path],
     proj_dir: Optional[Path],
     quiet: bool,
+    console: Optional[Console] = None,
 ) -> int:
     """Run simulation with Verilator."""
     if not _find_tool("verilator"):
         raise click.ClickException("verilator not found. Install with: sudo apt install verilator")
+
+    console = console or Console()
 
     # Gather source files
     sources = []
@@ -381,42 +624,93 @@ def _sim_verilator(
             compile_cmd.append(f"-I{inc}")
         compile_cmd.extend([str(f) for f in sources])
 
-        if not quiet:
-            click.echo("Compiling with verilator...")
+        if quiet:
+            # Quiet mode - no progress display
+            result = subprocess.run(compile_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                return result.returncode
 
-        result = subprocess.run(compile_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            click.echo(result.stderr, err=True)
+            exe = Path(tmpdir) / f"V{tb_name}"
+            if not exe.exists():
+                return 1
+
+            result = subprocess.run([str(exe)], capture_output=True, text=True, cwd=tmpdir)
+
+            trace = Path(tmpdir) / "trace.vcd"
+            if trace.exists():
+                shutil.move(str(trace), str(output))
+
             return result.returncode
 
-        # Run simulation
-        exe = Path(tmpdir) / f"V{tb_name}"
-        if not exe.exists():
-            raise click.ClickException(f"Verilator executable not found: {exe}")
+        # Non-quiet mode - use progress display
+        progress_table = ProgressTable(["Compile", "Simulate"])
+        progress_table.set_active("Compile")
 
-        if not quiet:
-            click.echo("Running simulation...")
+        with Live(progress_table.render(), console=console, refresh_per_second=2) as live:
+            # Compile stage
+            progress_table.update("Compile", StageStatus(
+                name="Compile", progress=50, status="Compiling..."
+            ))
+            live.update(progress_table.render())
 
-        result = subprocess.run(
-            [str(exe)],
-            capture_output=True,
-            text=True,
-            cwd=tmpdir,
-        )
+            result = subprocess.run(compile_cmd, capture_output=True, text=True)
 
-        if result.stdout and not quiet:
-            click.echo(result.stdout)
-        if result.stderr:
-            click.echo(result.stderr, err=True)
+            if result.returncode != 0:
+                progress_table.update("Compile", StageStatus(
+                    name="Compile", progress=0, status="Failed", errors=1
+                ))
+                progress_table.add_message("[red]==> Compilation failed[/red]")
+                if result.stderr:
+                    for line in result.stderr.strip().splitlines()[:5]:
+                        progress_table.add_message(f"    [dim]{escape(line)}[/dim]")
+                live.update(progress_table.render())
+                return result.returncode
 
-        # Move trace file
-        trace = Path(tmpdir) / "trace.vcd"
-        if trace.exists():
-            shutil.move(str(trace), str(output))
-            if not quiet:
-                click.echo(f"==> Waveform: {output}")
+            progress_table.update("Compile", StageStatus(
+                name="Compile", progress=100, status="Complete"
+            ))
+            progress_table.add_message("[green]==> Compilation complete[/green]")
+            live.update(progress_table.render())
 
-        return result.returncode
+            # Simulate stage
+            exe = Path(tmpdir) / f"V{tb_name}"
+            if not exe.exists():
+                progress_table.add_message(f"[red]==> Verilator executable not found: {escape(str(exe))}[/red]")
+                live.update(progress_table.render())
+                return 1
+
+            progress_table.set_active("Simulate")
+            progress_table.update("Simulate", StageStatus(
+                name="Simulate", progress=50, status="Running..."
+            ))
+            live.update(progress_table.render())
+
+            result = subprocess.run([str(exe)], capture_output=True, text=True, cwd=tmpdir)
+
+            if result.returncode != 0:
+                progress_table.update("Simulate", StageStatus(
+                    name="Simulate", progress=0, status="Failed", errors=1
+                ))
+                progress_table.add_message("[red]==> Simulation failed[/red]")
+                if result.stderr:
+                    for line in result.stderr.strip().splitlines()[:5]:
+                        progress_table.add_message(f"    [dim]{escape(line)}[/dim]")
+                live.update(progress_table.render())
+                return result.returncode
+
+            # Move trace file
+            trace = Path(tmpdir) / "trace.vcd"
+            if trace.exists():
+                shutil.move(str(trace), str(output))
+
+            progress_table.update("Simulate", StageStatus(
+                name="Simulate", progress=100, status="Complete"
+            ))
+            progress_table.add_message("[green]==> Simulation complete[/green]")
+            progress_table.add_message(f"    Waveform: {escape(str(output))}")
+            live.update(progress_table.render())
+
+        return 0
 
 
 __all__ = ["sim_cmd", "check_cmd"]
