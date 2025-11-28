@@ -110,7 +110,6 @@ create_project ${_xil_proj_name_} ./${_xil_proj_name_} -part xc7a100tcsg324-1
 set proj_dir [get_property directory [current_project]]
 
 # Reconstruct message rules
-set_msg_config  -severity {INFO}  -suppress  -ruleid {55}  -source 2
 
 # Set project properties
 set obj [current_project]
@@ -553,7 +552,6 @@ set_property -name "constrset" -value "constrs_1" -objects $obj
 set_property -name "description" -value "Vivado Synthesis Defaults" -objects $obj
 set_property -name "flow" -value "Vivado Synthesis 2025" -objects $obj
 set_property -name "name" -value "synth_1" -objects $obj
-set_property -name "needs_refresh" -value "0" -objects $obj
 set_property -name "srcset" -value "sources_1" -objects $obj
 
 set_property -name "gen_reports_parallel" -value "1" -objects $obj
@@ -1019,7 +1017,6 @@ set_property -name "constrset" -value "constrs_1" -objects $obj
 set_property -name "description" -value "Default settings for Implementation." -objects $obj
 set_property -name "flow" -value "Vivado Implementation 2025" -objects $obj
 set_property -name "name" -value "impl_1" -objects $obj
-set_property -name "needs_refresh" -value "0" -objects $obj
 set_property -name "pr_configuration" -value "" -objects $obj
 set_property -name "dfx_mode" -value "STANDARD" -objects $obj
 set_property -name "srcset" -value "sources_1" -objects $obj

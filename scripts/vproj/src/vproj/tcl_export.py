@@ -116,6 +116,12 @@ write_project_tcl {flags_str} {tcl_quote(out_tcl.resolve())}
             txt,
         )
 
+        # Remove volatile set_msg_config lines (ruleid changes between exports)
+        txt = re.sub(r'(?m)^set_msg_config\s+.*-ruleid.*$\n?', '', txt)
+
+        # Remove volatile needs_refresh property (toggles between 0 and 1)
+        txt = re.sub(r'(?m)^set_property\s+-name\s+"needs_refresh".*$\n?', '', txt)
+
         # Clean up extra blank lines
         txt = re.sub(r'\n{3,}', '\n\n', txt)
 
