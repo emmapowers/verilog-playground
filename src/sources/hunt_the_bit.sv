@@ -1,5 +1,17 @@
 `include "config.svh"
 
+/***
+* The classic hunt-the bit game, with a couple of additions.
+* The bits are displayed on the 16 LEDs for the nexys board, the buttons are the 16 switches below them.
+* The buttons are debounced (in top) and only rising edges are counted as pressed (these switches make awful buttons!).
+* There is also a points counter that is displayed on 7 segment displays (also in top).
+* When a button is pushed a "hit" or "miss" is detected. Hit is when any button (you could do more than one at a time...) is in
+* the same position as an active LED. A miss is if any of the pressed buttons was in a position without an active led.
+* For the first 3 hits, the LED where the hit occurred is removed from the pattern and the point counter increments.
+* You could hit more than one LED at once, but you would still get only one point. If you hit all 4 leds, the game breaks,
+* so I suggest you don'do that.
+* Once there is only 1 led left, every subsequent hit speeds up the led movement, until you lose, at which all the LEDs start flashing.
+***/
 module hunt_the_bit #(
     int unsigned MaxPeriod = `CLOCK_FREQ_HZ / 4
 ) (
@@ -83,10 +95,9 @@ module hunt_the_bit #(
       case (current_state)
         GAME_START: led_state <= GameStartPattern;
         HIT: begin
-          led_state <= led_state & ~hit_mask;
-          // if ($countbits(led_state, '1) != 1) begin
-          //   led_state <= led_state & ~hit_mask;
-          // end
+          if ($countbits(led_state, '1) != 1) begin
+            led_state <= led_state & ~hit_mask;
+          end
         end
         ROTATE: led_state <= ({led_state, led_state} >> 1);
         default: ;
@@ -101,10 +112,8 @@ module hunt_the_bit #(
       last_button_state <= '0;
     end else begin
       case (current_state)
-        ROTATE: begin
-          last_button_state <= button_state;
-          button_state <= button;
-        end
+        ROTATE: last_button_state <= button_state;
+        WAITING: button_state <= button;
         default:;
       endcase
     end
