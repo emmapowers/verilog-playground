@@ -245,6 +245,11 @@ def mv_cmd(
     """Move/rename file or folder - handles disk AND project."""
     xpr = find_xpr(proj_hint, proj_dir)
     old_resolved = old_path.resolve()
+
+    # If destination is a directory or path ends with /, move into that directory
+    if new_path.is_dir() or str(new_path).endswith("/"):
+        new_path = new_path / old_path.name
+
     new_resolved = new_path.resolve()
 
     # Handle disk move

@@ -1,6 +1,18 @@
 - This is a project to help me learn verilog. Never generate verilog code. You may provide verilog code examples if requested, but only for syntax/language features. Generating code for tooling is OK.
 - User-facing documentation is in README.md. This file (CLAUDE.md) is for Claude-specific instructions.
 
+## Project Structure
+
+```
+src/
+  sources/           # RTL source files (.sv)
+  constraints/       # Constraint files (.xdc)
+  testbench/         # Testbench files
+tests/               # Python/cocotb testbenches
+scripts/vproj/       # vproj CLI tool
+project.tcl          # Vivado project definition
+```
+
 ## vproj
 
 vproj is a CLI tool for Verilog/FPGA development that lets you use your favorite editor and terminal while maintaining Vivado project files and build infrastructure. It supports TCL import/export so you can keep generated Vivado project files out of git - just commit `project.tcl` and recreate the project on any machine.

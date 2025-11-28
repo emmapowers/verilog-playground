@@ -144,6 +144,15 @@ def cli(
 # --- File listing ---
 
 
+def _relative_path(path: str) -> str:
+    """Convert absolute path to relative path from current working directory."""
+    try:
+        return str(Path(path).relative_to(Path.cwd()))
+    except ValueError:
+        # Path is not relative to cwd, return as-is
+        return path
+
+
 @cli.command("ls")
 @click.pass_context
 def ls_(ctx):
@@ -181,8 +190,9 @@ def ls_(ctx):
         for fileset, path, ftype in files:
             # Check if this file contains the top module
             filename = Path(path).stem
+            rel_path = _relative_path(path)
             marker = " [TOP]" if top_module and filename == top_module else ""
-            click.echo(f"{fileset}\t{path}\t{ftype}{marker}")
+            click.echo(f"{fileset}\t{rel_path}\t{ftype}{marker}")
 
         raise SystemExit(0)
     else:
@@ -214,11 +224,12 @@ def ls_(ctx):
         for fileset, path, ftype in files:
             # Check if this file contains the top module
             filename = Path(path).stem
+            rel_path = _relative_path(path)
             if top_module and filename == top_module:
                 # Highlight the top module file with marker at start
-                table.add_row(f"[bold green]{fileset}[/bold green]", f"[bold green]{path}[/bold green]", f"[bold green]{ftype} *[/bold green]")
+                table.add_row(f"[bold green]{fileset}[/bold green]", f"[bold green]{rel_path}[/bold green]", f"[bold green]{ftype} *[/bold green]")
             else:
-                table.add_row(fileset, path, ftype)
+                table.add_row(fileset, rel_path, ftype)
 
         console.print(table)
         raise SystemExit(0)

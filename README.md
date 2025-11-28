@@ -5,10 +5,10 @@ A learning project for Verilog/SystemVerilog development targeting the Digilent 
 ## Project Structure
 
 ```
-fpga.srcs/
-  sources_1/new/     # RTL source files (.sv)
-  constrs_1/new/     # Constraint files (.xdc)
-  sim_1/new/         # Testbench files
+src/
+  sources/           # RTL source files (.sv)
+  constraints/       # Constraint files (.xdc)
+  testbench/         # Testbench files
 tests/               # Python/cocotb testbenches
 scripts/vproj/       # vproj CLI tool
 project.tcl          # Vivado project definition
