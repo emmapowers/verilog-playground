@@ -55,12 +55,15 @@ vproj program
 - **Build**: Synthesis, implementation, and bitstream generation with progress display
 - **Programming**: Program FPGA over JTAG
 - **Linting**: Fast syntax checking with Verilator
+- **Messages & Logs**: View build warnings/errors with filtering
+- **Board management**: Auto-install board files from Vivado xhub store
 - **Server mode**: Persistent Vivado process for instant command execution
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
+| `vproj info` | Show project info (part, board, top, Vivado version) |
 | `vproj ls` | List project files |
 | `vproj add-src <files>` | Add source files |
 | `vproj add-xdc <files>` | Add constraint files |
@@ -72,8 +75,16 @@ vproj program
 | `vproj build` | Build bitstream |
 | `vproj build --program` | Build and program |
 | `vproj program` | Program FPGA |
+| `vproj msg` | Show build messages (warnings/errors) |
+| `vproj log` | View build logs |
 | `vproj import-tcl <file>` | Import project from TCL |
 | `vproj export-tcl` | Export project to TCL |
+| `vproj board info` | Show board configuration |
+| `vproj board install` | Install board files from xhub |
+| `vproj board uninstall <pattern>` | Uninstall board files |
+| `vproj board refresh` | Refresh board catalog from GitHub |
+| `vproj board update [pattern]` | Update installed boards |
+| `vproj board list [pattern]` | List available boards |
 
 ### TCL Import/Export
 
@@ -87,6 +98,8 @@ vproj import-tcl project.tcl
 vproj export-tcl
 ```
 
+Board files are automatically installed from Vivado's xhub store during import if missing. Use `--no-board-install` to skip.
+
 ### Server Mode
 
 Start a persistent Vivado process to eliminate startup overhead (~15s per command → instant):
@@ -95,6 +108,31 @@ Start a persistent Vivado process to eliminate startup overhead (~15s per comman
 vproj server start   # Start server
 vproj ls             # Instant
 vproj server stop    # Stop when done
+```
+
+### Messages and Logs
+
+View build messages (warnings/errors/critical) with filtering:
+
+```bash
+vproj msg              # Show all messages from last build
+vproj msg -w           # Warnings only
+vproj msg -e           # Errors only
+vproj msg -c           # Critical warnings only
+vproj msg --grep PAT   # Filter by pattern
+vproj msg --synth      # Synthesis only
+vproj msg info         # Show Vivado message suppression state
+vproj msg reset        # Reset message suppressions
+```
+
+View full build logs:
+
+```bash
+vproj log              # Last 50 lines of synthesis log
+vproj log synth        # Synthesis log
+vproj log impl         # Implementation log
+vproj log daemon       # vproj daemon log
+vproj log --all        # Full log
 ```
 
 ### GUI Mode

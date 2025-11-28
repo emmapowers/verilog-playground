@@ -32,6 +32,7 @@ source ~/xilinx/2025.1/Vivado/settings64.sh
 ```
 
 ### Project Management
+- `vproj info` - Show project info (part, board, top module, Vivado version, server status)
 - `vproj ls` - List project files (highlights top module)
 - `vproj top` - Print current top module
 - `vproj top <module>` - Set top module
@@ -50,14 +51,57 @@ source ~/xilinx/2025.1/Vivado/settings64.sh
 ### Verification
 - `vproj check` - Lint/syntax check with Verilator (colorized output with summary)
 
+### Simulation
+
+Run simulations and generate VCD waveforms:
+
+```bash
+vproj sim src/testbench/tb_foo.sv              # Run until $finish (Ctrl+C to stop)
+vproj sim src/testbench/tb_foo.sv -t 1ms       # Run for 1ms of simulation time
+vproj sim src/testbench/tb_foo.sv --open       # Open waveform in gtkwave after
+```
+
+- `vproj sim <testbench>` - Run simulation with xsim (default), generates VCD
+- `vproj sim <testbench> -t/--timeout <time>` - Limit simulation time (e.g., `1ms`, `10us`)
+- `vproj sim <testbench> --open` - Open waveform in gtkwave after simulation
+- `vproj sim <testbench> --iverilog` - Use Icarus Verilog instead of xsim
+- `vproj sim <testbench> --verilator` - Use Verilator instead of xsim
+- `vproj sim <testbench> -o <path>` - Custom output waveform path
+
+Without `--timeout`, simulation runs until `$finish` or Ctrl+C. Progress is shown live. VCD is saved even if interrupted.
+
 ### TCL Import/Export
 
 Keep Vivado project files out of git by using TCL scripts:
 
 - `vproj export-tcl` - Export project to `project.tcl` (run before committing)
 - `vproj import-tcl project.tcl` - Recreate Vivado project from TCL script
+- `vproj import-tcl --no-board-install project.tcl` - Import without auto-installing board files
 
 Workflow: After cloning, run `import-tcl` to create the project. Before committing changes, run `export-tcl` to update `project.tcl`.
+
+Board files are auto-installed during import if missing. Use `--no-board-install` to skip.
+
+### Board Management
+
+Boards include the FPGA part + pin assignments + peripherals. Setting a board also sets the part.
+
+- `vproj board` - Show current board configuration
+- `vproj board set <board_part>` - Set board (e.g., `digilentinc.com:nexys-a7-100t:part0:1.3`)
+- `vproj board clear` - Clear board (retain FPGA part)
+- `vproj board install [pattern]` - Install board files from xhub
+- `vproj board uninstall <pattern>` - Uninstall board files (requires Vivado in PATH or --settings)
+- `vproj board list [pattern]` - List available boards
+- `vproj board refresh` - Refresh board catalog
+- `vproj board update [pattern]` - Update installed boards
+
+### Part Management
+
+Use `vproj part` for projects without a board, or to set the FPGA part directly.
+
+- `vproj part` - Show current FPGA part
+- `vproj part set <part>` - Set FPGA part directly (clears board_part)
+- `vproj part list [pattern]` - List available FPGA parts
 
 ### Server Mode (Faster Commands)
 
@@ -76,6 +120,35 @@ vproj server stop     # Stop server when done
 
 Commands automatically use the server if running, otherwise fall back to batch mode.
 
+### Messages and Logs
+
+View build messages (warnings/errors/critical):
+
+```bash
+vproj msg                    # Show all messages from last build
+vproj msg -w                 # Warnings only
+vproj msg -e                 # Errors only
+vproj msg -c                 # Critical warnings only
+vproj msg --grep "timing"    # Filter by pattern
+vproj msg --synth            # Synthesis messages only
+vproj msg --impl             # Implementation messages only
+```
+
+- `vproj msg info` - Show Vivado message suppression state and counts
+- `vproj msg reset` - Reset all message suppressions
+
+View full build logs:
+
+```bash
+vproj log                    # Last 50 lines of synthesis log
+vproj log synth              # Synthesis log
+vproj log impl               # Implementation log
+vproj log daemon             # vproj daemon log
+vproj log sim                # Simulation log
+vproj log synth --all        # Full log
+vproj log synth --grep "error"  # Filter by pattern
+```
+
 ### GUI Mode
 
 Use `--gui` to connect to an existing Vivado GUI session that has the server running. This lets you use CLI commands while also having the GUI open for visualization and debugging.
@@ -93,3 +166,4 @@ Tests live in `tests/` and use the `@coco_test` decorator from `tests/coco_helpe
 
 - Be VERY careful when modifying vproj to not break tcl import and export. It's quite delicate.
 - vproj is a Python package at `scripts/vproj/` installed in editable mode via pixi.
+- Use `display_path()` from `vproj.utils` when displaying paths to users. It shows relative paths when under cwd, absolute otherwise.

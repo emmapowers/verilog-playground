@@ -49,6 +49,7 @@ COMMAND_CATEGORIES = {
     "Project": ["info", "ls", "top", "tree", "add-src", "add-xdc", "add-sim", "add-ip", "rm", "mv", "include"],
     "Build": ["build", "program", "clean"],
     "Verify": ["check", "lint", "sim"],
+    "Messages": ["msg", "log"],
     "TCL": ["export-tcl", "import-tcl"],
     "Board": ["board"],
     "Server": ["server"],
@@ -1223,6 +1224,264 @@ def server_script(ctx):
     click.echo("Paste this in the Vivado TCL console to enable vproj commands:\n")
     click.echo(f"  source {script_path}")
     click.echo("\nOr install permanently with: vproj server install")
+
+
+# --- Log commands ---
+
+
+@cli.group("log", invoke_without_command=True)
+@click.option("-n", "--tail", type=int, help="Show last N lines.")
+@click.option("--grep", "grep_pattern", help="Filter by regex pattern.")
+@click.pass_context
+def log(ctx, tail, grep_pattern):
+    """View full build logs.
+
+    Without subcommand, shows last 50 lines of synthesis log.
+    Use 'vproj msg' to view just warnings/errors/critical messages.
+    """
+    if ctx.invoked_subcommand is None:
+        # Default: show synthesis log
+        _show_full_log(ctx, "synth", tail or 50, grep_pattern)
+
+
+def _show_full_log(ctx, log_type_str, tail, grep_pattern):
+    """Show full log content."""
+    from .logs import LogType, get_log_path, read_log_lines
+
+    log_type = LogType(log_type_str)
+    log_path = get_log_path(log_type, ctx.obj["proj_dir"])
+
+    if not log_path:
+        click.echo(f"{log_type_str.capitalize()} log not found. Run 'vproj build' first.", err=True)
+        raise SystemExit(1)
+
+    lines = read_log_lines(log_path, tail=tail, grep_pattern=grep_pattern)
+
+    for line in lines:
+        click.echo(line)
+
+    raise SystemExit(0)
+
+
+@log.command("synth")
+@click.option("-n", "--tail", type=int, default=50, show_default=True, help="Show last N lines.")
+@click.option("--grep", "grep_pattern", help="Filter by regex pattern.")
+@click.option("--all", "show_all", is_flag=True, help="Show full log.")
+@click.pass_context
+def log_synth(ctx, tail, grep_pattern, show_all):
+    """View synthesis log."""
+    _show_full_log(ctx, "synth", None if show_all else tail, grep_pattern)
+
+
+@log.command("impl")
+@click.option("-n", "--tail", type=int, default=50, show_default=True, help="Show last N lines.")
+@click.option("--grep", "grep_pattern", help="Filter by regex pattern.")
+@click.option("--all", "show_all", is_flag=True, help="Show full log.")
+@click.pass_context
+def log_impl(ctx, tail, grep_pattern, show_all):
+    """View implementation log."""
+    _show_full_log(ctx, "impl", None if show_all else tail, grep_pattern)
+
+
+@log.command("daemon")
+@click.option("-n", "--tail", type=int, default=50, show_default=True, help="Show last N lines.")
+@click.option("--grep", "grep_pattern", help="Filter by regex pattern.")
+@click.option("--all", "show_all", is_flag=True, help="Show full log.")
+@click.pass_context
+def log_daemon(ctx, tail, grep_pattern, show_all):
+    """View daemon log."""
+    from .logs import LogType, get_log_path, read_log_lines
+
+    log_path = get_log_path(LogType.DAEMON)
+    if not log_path:
+        click.echo("Daemon log not found.", err=True)
+        raise SystemExit(1)
+
+    lines = read_log_lines(log_path, tail=None if show_all else tail, grep_pattern=grep_pattern)
+
+    for line in lines:
+        click.echo(line)
+
+    raise SystemExit(0)
+
+
+@log.command("sim")
+@click.option("-n", "--tail", type=int, default=50, show_default=True, help="Show last N lines.")
+@click.option("--grep", "grep_pattern", help="Filter by regex pattern.")
+@click.option("--all", "show_all", is_flag=True, help="Show full log.")
+@click.pass_context
+def log_sim(ctx, tail, grep_pattern, show_all):
+    """View simulation log."""
+    _show_full_log(ctx, "sim", None if show_all else tail, grep_pattern)
+
+
+# --- Message commands ---
+
+
+@cli.group("msg", invoke_without_command=True)
+@click.option("-w", "--warnings", "show_warnings", is_flag=True, help="Show warnings only.")
+@click.option("-e", "--errors", "show_errors", is_flag=True, help="Show errors only.")
+@click.option("-c", "--critical", "show_critical", is_flag=True, help="Show critical warnings only.")
+@click.option("--grep", "grep_pattern", help="Filter by regex pattern.")
+@click.option("--synth", "synth_only", is_flag=True, help="Show synthesis messages only.")
+@click.option("--impl", "impl_only", is_flag=True, help="Show implementation messages only.")
+@click.pass_context
+def msg(ctx, show_warnings, show_errors, show_critical, grep_pattern, synth_only, impl_only):
+    """View build messages (warnings/errors/critical).
+
+    Without subcommand, shows messages from the last build.
+    Use 'msg info' for Vivado message configuration.
+    Use 'msg reset' to clear message suppressions.
+    """
+    if ctx.invoked_subcommand is None:
+        _show_messages(ctx, show_warnings, show_errors, show_critical, grep_pattern, synth_only, impl_only)
+
+
+def _show_messages(ctx, show_warnings, show_errors, show_critical, grep_pattern, synth_only, impl_only):
+    """Show messages from build logs."""
+    from rich.console import Console
+
+    from .logs import LogType, Severity, extract_messages, format_messages, get_log_path
+
+    no_color = ctx.obj.get("no_color", False)
+    console = Console()
+
+    # Determine which logs to show
+    logs_to_show = []
+    if synth_only:
+        logs_to_show = [(LogType.SYNTH, "Synthesis")]
+    elif impl_only:
+        logs_to_show = [(LogType.IMPL, "Implementation")]
+    else:
+        logs_to_show = [(LogType.SYNTH, "Synthesis"), (LogType.IMPL, "Implementation")]
+
+    # Collect messages
+    all_messages = []
+
+    for log_type, label in logs_to_show:
+        log_path = get_log_path(log_type, ctx.obj["proj_dir"])
+        if not log_path:
+            continue
+
+        # Filter by severity
+        severities = None
+        if show_warnings or show_errors or show_critical:
+            severities = set()
+            if show_warnings:
+                severities.add(Severity.WARNING)
+            if show_errors:
+                severities.add(Severity.ERROR)
+            if show_critical:
+                severities.add(Severity.CRITICAL)
+
+        messages = extract_messages(log_path, severities=severities, grep_pattern=grep_pattern)
+        if messages:
+            all_messages.append((label, messages))
+
+    if not all_messages:
+        click.echo("No messages found.", err=True)
+        raise SystemExit(0)
+
+    for label, messages in all_messages:
+        if not no_color:
+            console.print(f"[bold cyan]{label}:[/bold cyan]")
+        else:
+            click.echo(f"{label}:")
+
+        formatted = format_messages(messages, no_color=no_color)
+        if no_color:
+            for line in formatted:
+                click.echo(f"  {line}")
+        else:
+            for line in formatted:
+                console.print(f"  {line}")
+
+    raise SystemExit(0)
+
+
+@msg.command("info")
+@click.pass_context
+def msg_info(ctx):
+    """Show Vivado message configuration and suppression state."""
+    from rich.console import Console
+
+    from .messages import get_message_config
+
+    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
+
+    config = get_message_config(
+        ctx.obj["proj_hint"],
+        ctx.obj["proj_dir"],
+        ctx.obj["settings"],
+        batch=ctx.obj["batch"],
+        gui=ctx.obj["gui"],
+        daemon=ctx.obj["daemon"],
+    )
+
+    if not config:
+        click.echo("Failed to get message configuration", err=True)
+        raise SystemExit(1)
+
+    no_color = ctx.obj.get("no_color", False)
+
+    def status(suppressed: bool) -> str:
+        if no_color:
+            return "suppressed" if suppressed else "normal"
+        return "[yellow]suppressed[/yellow]" if suppressed else "[green]normal[/green]"
+
+    if no_color:
+        click.echo("Message Configuration:")
+        click.echo(f"  INFO:     {status(config.info_suppressed)}")
+        click.echo(f"  WARNING:  {status(config.warning_suppressed)}")
+        click.echo(f"  ERROR:    {status(config.error_suppressed)}")
+        click.echo(f"  CRITICAL: {status(config.critical_suppressed)}")
+        click.echo("")
+        click.echo("Counts (current session):")
+        click.echo(f"  Info:     {config.info_count}")
+        click.echo(f"  Warnings: {config.warning_count}")
+        click.echo(f"  Errors:   {config.error_count}")
+        click.echo(f"  Critical: {config.critical_count}")
+    else:
+        console = Console()
+        console.print("Message Configuration:")
+        console.print(f"  INFO:     {status(config.info_suppressed)}")
+        console.print(f"  WARNING:  {status(config.warning_suppressed)}")
+        console.print(f"  ERROR:    {status(config.error_suppressed)}")
+        console.print(f"  CRITICAL: {status(config.critical_suppressed)}")
+        console.print("")
+        console.print("Counts (current session):")
+        console.print(f"  Info:     {config.info_count}")
+        console.print(f"  Warnings: [dim]{config.warning_count}[/dim]")
+        console.print(f"  Errors:   [red]{config.error_count}[/red]" if config.error_count else f"  Errors:   {config.error_count}")
+        console.print(f"  Critical: [yellow]{config.critical_count}[/yellow]" if config.critical_count else f"  Critical: {config.critical_count}")
+
+    raise SystemExit(0)
+
+
+@msg.command("reset")
+@click.pass_context
+def msg_reset(ctx):
+    """Reset all message suppressions."""
+    from .messages import reset_message_config
+
+    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
+
+    result = reset_message_config(
+        ctx.obj["proj_hint"],
+        ctx.obj["proj_dir"],
+        ctx.obj["settings"],
+        ctx.obj["quiet"],
+        batch=ctx.obj["batch"],
+        gui=ctx.obj["gui"],
+        daemon=ctx.obj["daemon"],
+    )
+
+    if result == 0:
+        click.echo("Message suppressions reset")
+    else:
+        click.echo("Failed to reset message suppressions", err=True)
+
+    raise SystemExit(result)
 
 
 def main():

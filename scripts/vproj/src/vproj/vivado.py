@@ -420,6 +420,14 @@ if {{![file exists $_vproj_proj]}} {{
     exit 2
 }}
 set ::_vproj_did_open [_vproj_ensure_open $_vproj_proj]
+
+# Reset any stuck message suppressions first
+catch {{ reset_msg_config -suppress -severity {{WARNING}} }}
+catch {{ reset_msg_config -suppress -severity {{INFO}} }}
+catch {{ reset_msg_config -suppress -severity {{ERROR}} }}
+catch {{ reset_msg_config -suppress -severity {{CRITICAL WARNING}} }}
+
+# Suppress INFO messages during vproj operations
 set_msg_config -severity INFO -suppress
 """
 
