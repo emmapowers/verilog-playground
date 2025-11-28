@@ -148,6 +148,18 @@ vproj server stop     # Stop when done
 
 Commands automatically use the server if running, otherwise fall back to batch mode.
 
+#### Git Hooks
+
+Auto-export `project.tcl` before commits:
+
+```bash
+vproj hook install update   # Auto-stage project.tcl if changed
+vproj hook install warn     # Warn if changed, allow commit
+vproj hook install block    # Block commit if project.tcl changed
+vproj hook status           # Check hook status
+vproj hook uninstall        # Remove hook
+```
+
 #### Messages & Logs
 
 | Command | Description |

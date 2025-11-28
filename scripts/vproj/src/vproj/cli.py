@@ -57,6 +57,7 @@ COMMAND_CATEGORIES = {
     "TCL": ["export-tcl", "import-tcl"],
     "Board": ["board"],
     "Server": ["server"],
+    "Hooks": ["hook"],
 }
 
 
@@ -1465,6 +1466,73 @@ def msg_reset(ctx):
         click.echo("Failed to reset message suppressions", err=True)
 
     raise SystemExit(result)
+
+
+# --- Hook commands ---
+
+
+@cli.group("hook")
+def hook():
+    """Manage git pre-commit hooks for auto-exporting project.tcl."""
+    pass
+
+
+@hook.command("install")
+@click.argument("mode", type=click.Choice(["warn", "block", "update"]))
+def hook_install(mode):
+    """Install pre-commit hook for auto-exporting project.tcl.
+
+    MODE specifies behavior when project.tcl changes:
+
+    \b
+    warn   - warn but allow commit
+    block  - error and block commit
+    update - auto-stage and continue
+    """
+    from .hooks import HookMode, find_git_root, install_hook
+
+    git_root = find_git_root()
+    if not git_root:
+        click.echo("Not in a git repository", err=True)
+        raise SystemExit(1)
+
+    success, message = install_hook(git_root, HookMode(mode))
+    click.echo(message)
+    raise SystemExit(0 if success else 1)
+
+
+@hook.command("uninstall")
+def hook_uninstall():
+    """Remove pre-commit hook."""
+    from .hooks import find_git_root, uninstall_hook
+
+    git_root = find_git_root()
+    if not git_root:
+        click.echo("Not in a git repository", err=True)
+        raise SystemExit(1)
+
+    success, message = uninstall_hook(git_root)
+    click.echo(message)
+    raise SystemExit(0 if success else 1)
+
+
+@hook.command("status")
+def hook_status():
+    """Check if pre-commit hook is installed."""
+    from .hooks import find_git_root, get_current_mode
+
+    git_root = find_git_root()
+    if not git_root:
+        click.echo("Not in a git repository", err=True)
+        raise SystemExit(1)
+
+    mode = get_current_mode(git_root)
+    if mode:
+        click.echo(f"Pre-commit hook installed (mode={mode.value})")
+        raise SystemExit(0)
+    else:
+        click.echo("Pre-commit hook is not installed")
+        raise SystemExit(1)
 
 
 def main():
