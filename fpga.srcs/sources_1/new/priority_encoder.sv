@@ -12,5 +12,4 @@ module priority_encoder #(
       if (onehot[i]) index = i;
     end
   end
-
 endmodule

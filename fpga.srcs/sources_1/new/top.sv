@@ -9,30 +9,33 @@ module top (
     output dp,
     output [7:0] an
 );
+  localparam int unsigned NumDigits = 8;
+  localparam int unsigned DecimalWidth = $rtoi($ceil(NumDigits * $clog2(10)));
+  logic [DecimalWidth-1:0] points;
+  logic [(NumDigits*4)-1:0] bcd;
+  logic [6:0] segment_digits[NumDigits];
+  logic dots[NumDigits] = '{default: '0};
+  logic [15:0] buttons;
   logic rst;
+  
   reset_gen rgen (
       .clk(clk),
       .ext_rst_n(rst_n),
       .rst(rst)
   );
 
-  logic [15:0] sw0;
-  logic [15:0] sw1;
-  always_ff @(posedge clk) begin
-    if (rst) begin
-      sw0 <= '0;
-      sw1 <= '0;
+  generate
+    for (genvar i = 0; i < 16; i++) begin : debouncers
+      debounce #(
+        .DebouncePeriod(`MS * 10)
+      ) bd (
+        .clk(clk),
+        .rst(rst),
+        .button(sw[i]),
+        .debounced(buttons[i])
+      );
     end
-    sw0 <= sw;
-    sw1 <= sw0;
-  end
-
-  localparam int unsigned NumDigits = 8;
-  localparam int unsigned DecimalWidth = $rtoi($ceil(NumDigits * $clog2(10)));
-  logic [DecimalWidth:0] points = 8;
-  logic [(NumDigits*4)-1:0] bcd;
-  logic [6:0] segment_digits[NumDigits];
-  logic dots[NumDigits] = '{default: '0};
+  endgenerate
 
   hunt_the_bit #(
       .MaxPeriod(100_000_000 / 4)
@@ -40,7 +43,7 @@ module top (
       .clk(clk),
       .rst(rst),
       .led(led),
-      .button(sw1),
+      .button(buttons),
       .points(points)
   );
 
@@ -71,13 +74,4 @@ module top (
       .segments(seg),
       .dot(dp)
   );
-
-  //   blinky #(
-  //       .PeriodMs(2000),
-  //       .OnTimeMs(250)
-  //   ) blinkMe (
-  //       .clk  (clk),
-  //       .rst(rst),
-  //       .led  (led[0])
-  //   );
 endmodule

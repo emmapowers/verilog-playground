@@ -1,17 +1,16 @@
 `include "config.svh"
 
 module hunt_the_bit #(
-    int unsigned MaxPeriod = `CLOCK_FREQ_HZ
+    int unsigned MaxPeriod = `CLOCK_FREQ_HZ / 4
 ) (
     input logic clk,
     input logic rst,
     input logic [15:0] button,
     output logic [15:0] led,
-    output logic [7:0] score,
     output logic [(8*$clog2(10))-1:0] points
 );
-  localparam int unsigned MaxCount = MaxPeriod - 1;
   localparam int unsigned CounterWidth = $clog2(MaxPeriod);
+  localparam [CounterWidth-1:0] MaxCount = '1;
 
   localparam logic [15:0] GameStartPattern = 16'h0700;
   localparam logic [15:0] LoseAPattern = 16'hFFFF;
@@ -27,7 +26,7 @@ module hunt_the_bit #(
   } state_t;
 
 
-  state_t next_state = GAME_START;
+  state_t next_state;
   state_t current_state = GAME_START;
   logic [15:0] led_state = '0;
   logic [CounterWidth-1:0] counter = 0;
@@ -35,6 +34,8 @@ module hunt_the_bit #(
   logic hit;
   logic miss;
   logic [15:0] hit_mask;
+  logic [15:0] button_state = '0;
+  logic [15:0] last_button_state = '0;
 
   // State Change Detection
   always_comb begin
@@ -42,15 +43,15 @@ module hunt_the_bit #(
     case (current_state)
       GAME_START: next_state = WAITING;
       WAITING: begin
-        if (counter == period) next_state = ROTATE;
         if (hit) next_state = HIT;
-        if (miss) next_state = LOSE_A;
+        else if (miss) next_state = LOSE_A;
+        else if (counter == period) next_state = ROTATE;
       end
       HIT: next_state = ROTATE;
       ROTATE: next_state = WAITING;
       LOSE_A: if (counter == MaxCount / 2) next_state = LOSE_A;
-      LOSE_B: if (counter == MaxCount / 2) next_state = LOSE_A;
-      default: next_state = current_state;
+      LOSE_B: if (counter == MaxCount / 2) next_state = LOSE_B;
+      default:;
     endcase
   end
 
@@ -92,14 +93,29 @@ module hunt_the_bit #(
     end
   end
 
+  // Button state
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      button_state <= '0;
+      last_button_state <= '0;
+    end else begin
+      last_button_state <= button_state;
+      button_state <= button;
+    end
+  end
+
   // Hit/Miss
   always_comb begin
+    logic [15:0] pressed_buttons = '0;
     hit_mask = '0;
     hit = 0;
     miss = 0;
     if (!rst) begin
-      hit_mask = led_state & button;
-      miss = |(~led_state & button);
+      // we only care about buttons on the rising edge
+      pressed_buttons = button_state & ~last_button_state;
+
+      hit_mask = led_state & pressed_buttons;
+      miss = |(~led_state & pressed_buttons);
       hit = !miss && |hit_mask;
     end
   end
@@ -107,7 +123,7 @@ module hunt_the_bit #(
   // Period
   always_ff @(posedge clk) begin
     if (rst) begin
-      period <= MaxPeriod;
+      period <= MaxCount;
     end else begin
       case (current_state)
         HIT: begin
@@ -115,7 +131,7 @@ module hunt_the_bit #(
             period <= period >> 1;
           end
         end
-        default: ;
+        default:;
       endcase
     end
   end
@@ -127,6 +143,7 @@ module hunt_the_bit #(
     end else begin
       case (current_state)
         HIT: points <= points + 1;
+        default:;
       endcase
     end
   end

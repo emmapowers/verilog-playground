@@ -16,6 +16,7 @@ bitstring = ">=4.3.1,<5"
 ipython = ">=9.6.0,<10"
 click = ">=8.3.0,<9"
 hatchling = ">=1.20"
+rich = ">=13.0"
 
 [pypi-dependencies]
 vproj = { path = "scripts/vproj", editable = true }

@@ -9,7 +9,7 @@ module reset_gen #(
 );
 
   localparam int unsigned Width = $clog2(ResetCycles);
-  localparam logic [Width-1:0] CountMax = (ResetCycles == 0) ? 0 : ResetCycles - 1;
+  localparam logic [Width-1:0] CountMax = (ResetCycles == 0) ? '0 : ResetCycles - 1'b1;
 
   reg [Width-1:0] counter = '0;
   reg rst_state = 1'b1;
