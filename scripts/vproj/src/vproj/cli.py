@@ -506,17 +506,20 @@ def rm_(ctx, files, recursive):
 
 
 @cli.command("mv")
-@click.argument("old", type=click.Path(path_type=Path))
-@click.argument("new", type=click.Path(path_type=Path))
+@click.argument("sources", type=click.Path(path_type=Path), nargs=-1, required=True)
+@click.argument("dest", type=click.Path(path_type=Path))
 @click.option("-r", "--recursive", is_flag=True, help="Move folder contents recursively.")
 @click.pass_context
-def mv_(ctx, old, new, recursive):
-    """Move/rename file or folder (disk + project)."""
+def mv_(ctx, sources, dest, recursive):
+    """Move/rename files or folders (disk + project).
+
+    With multiple sources, DEST must be a directory.
+    """
     check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
     raise SystemExit(
         mv_cmd(
-            old,
-            new,
+            sources,
+            dest,
             recursive,
             ctx.obj["proj_hint"],
             ctx.obj["proj_dir"],

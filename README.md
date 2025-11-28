@@ -75,7 +75,7 @@ project.tcl          # Vivado project definition
 | `vproj add-xdc <files>` | Add constraint files |
 | `vproj add-sim <files>` | Add testbench files |
 | `vproj rm <files>` | Remove files from project |
-| `vproj mv <old> <new>` | Move/rename files (updates project references) |
+| `vproj mv <files...> <dest>` | Move/rename files (updates project references) |
 | `vproj include ls` | List include directories |
 | `vproj include add <dirs>` | Add include directories |
 | `vproj include rm <dirs>` | Remove include directories |

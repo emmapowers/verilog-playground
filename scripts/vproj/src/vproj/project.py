@@ -243,20 +243,13 @@ def remove_cmd(
     return code
 
 
-def mv_cmd(
+def _mv_single(
     old_path: Path,
     new_path: Path,
     recursive: bool,
-    proj_hint: Optional[Path],
-    proj_dir: Optional[Path],
-    settings: Optional[Path],
     quiet: bool,
-    batch: bool = False,
-    gui: bool = False,
-    daemon: bool = False,
-) -> int:
-    """Move/rename file or folder - handles disk AND project."""
-    xpr = find_xpr(proj_hint, proj_dir)
+) -> tuple[Path, Path, list[str]]:
+    """Move a single file/folder on disk and generate TCL. Returns (old_resolved, new_resolved, tcl_lines)."""
     old_resolved = old_path.resolve()
 
     # If destination is a directory or path ends with /, move into that directory
@@ -266,7 +259,6 @@ def mv_cmd(
     new_resolved = new_path.resolve()
 
     # Handle disk move
-    disk_msg = ""
     if old_resolved.exists() and not new_resolved.exists():
         # Move on disk
         if old_resolved.is_dir() and not recursive:
@@ -275,24 +267,26 @@ def mv_cmd(
             )
         new_resolved.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(old_resolved), str(new_resolved))
-        disk_msg = f"Moved on disk: {old_path} -> {new_path}"
+        if not quiet:
+            click.echo(f"Moved on disk: {old_path} -> {new_path}")
     elif not old_resolved.exists() and new_resolved.exists():
-        disk_msg = f"WARN: {old_path} doesn't exist on disk, updating project only"
+        if not quiet:
+            click.echo(f"WARN: {old_path} doesn't exist on disk, updating project only")
     elif old_resolved.exists() and new_resolved.exists():
         raise click.ClickException(f"Both {old_path} and {new_path} exist on disk")
     else:
         raise click.ClickException(f"Neither {old_path} nor {new_path} exist on disk")
 
-    # Update project
-    lines: list[str] = [make_smart_open(xpr)]
+    # Generate TCL for project update
+    tcl_lines: list[str] = []
 
     if recursive or old_resolved.is_dir():
         # Folder move - update all files under old path
         old_str = str(old_resolved)
         new_str = str(new_resolved)
-        lines.append(f'puts "MV (recursive) {old_path} -> {new_path}"')
+        tcl_lines.append(f'puts "MV (recursive) {old_path} -> {new_path}"')
         pattern = old_str + "/*"
-        lines.append(f"""
+        tcl_lines.append(f"""
 set moved 0
 foreach f [get_files -quiet -filter "NAME =~ {{{pattern}}}"] {{
     set old_name [get_property NAME $f]
@@ -314,10 +308,10 @@ puts "Moved $moved files in project"
 """)
     else:
         # Single file move
-        lines.append(f'puts "MV {old_path} -> {new_path}"')
+        tcl_lines.append(f'puts "MV {old_path} -> {new_path}"')
         old_quoted = tcl_quote(old_resolved)
         new_quoted = tcl_quote(new_resolved)
-        lines.append(f"""
+        tcl_lines.append(f"""
 set f [get_files -quiet {old_quoted}]
 if {{[llength $f] > 0}} {{
     set fs_name [get_property FILESET_NAME $f]
@@ -333,11 +327,39 @@ if {{[llength $f] > 0}} {{
 }}
 """)
 
+    return old_resolved, new_resolved, tcl_lines
+
+
+def mv_cmd(
+    sources: tuple[Path, ...],
+    dest: Path,
+    recursive: bool,
+    proj_hint: Optional[Path],
+    proj_dir: Optional[Path],
+    settings: Optional[Path],
+    quiet: bool,
+    batch: bool = False,
+    gui: bool = False,
+    daemon: bool = False,
+) -> int:
+    """Move/rename files or folders - handles disk AND project."""
+    xpr = find_xpr(proj_hint, proj_dir)
+
+    # With multiple sources, dest must be a directory
+    if len(sources) > 1 and not dest.is_dir() and not str(dest).endswith("/"):
+        raise click.ClickException(
+            f"With multiple sources, destination must be a directory: {dest}"
+        )
+
+    # Process each source
+    lines: list[str] = [make_smart_open(xpr)]
+
+    for src in sources:
+        _, _, tcl_lines = _mv_single(src, dest, recursive, quiet)
+        lines.extend(tcl_lines)
+
     lines.append(make_smart_close())
     tcl = "\n".join(lines)
-
-    if not quiet and disk_msg:
-        click.echo(disk_msg)
 
     code = run_vivado_tcl_auto(
         tcl, proj_dir=proj_dir, settings=settings, quiet=quiet,
