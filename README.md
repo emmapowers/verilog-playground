@@ -45,7 +45,9 @@ vproj program
 
 ## vproj
 
-`vproj` is a CLI tool for managing Vivado projects without the GUI. It wraps Vivado's TCL interface to provide fast, scriptable commands.
+`vproj` is a CLI tool for Verilog/FPGA development that lets you use your favorite editor and terminal while maintaining Vivado project files and build infrastructure. It supports TCL import/export so you can keep generated Vivado project files out of git - just commit `project.tcl` and recreate the project on any machine.
+
+![vproj build --program](docs/vproj-build-and-program.png)
 
 ### Features
 
@@ -73,6 +75,18 @@ vproj program
 | `vproj import-tcl <file>` | Import project from TCL |
 | `vproj export-tcl` | Export project to TCL |
 
+### TCL Import/Export
+
+Keep Vivado project files out of git by using TCL scripts:
+
+```bash
+# After cloning - recreate project from TCL
+vproj import-tcl project.tcl
+
+# Before committing - export changes to TCL
+vproj export-tcl
+```
+
 ### Server Mode
 
 Start a persistent Vivado process to eliminate startup overhead (~15s per command → instant):
@@ -82,6 +96,10 @@ vproj server start   # Start server
 vproj ls             # Instant
 vproj server stop    # Stop when done
 ```
+
+### GUI Mode
+
+Use `--gui` to connect to an existing Vivado GUI session that has the server running. This lets you use CLI commands while also having the GUI open for visualization and debugging.
 
 ### Vivado Settings
 
