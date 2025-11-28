@@ -7,9 +7,13 @@ from typing import Optional
 
 import click
 
+from .cli_utils import vivado_command
+from .constants import Fileset
+from .context import VprojContext
 from .vivado import PROJECT_DIR_DEFAULT, check_vivado_available
 from .project import (
     list_cmd,
+    add_files_cmd,
     add_src_cmd,
     add_xdc_cmd,
     add_sim_cmd,
@@ -442,82 +446,34 @@ def tree_(ctx, nets):
 
 @cli.command("add-src")
 @click.argument("files", type=click.Path(path_type=Path, exists=True), nargs=-1, required=True)
-@click.pass_context
-def add_src(ctx, files):
+@vivado_command()
+def add_src(ctx: VprojContext, files):
     """Add HDL source files (.v, .sv, .vhd) to sources_1."""
-    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
-    raise SystemExit(
-        add_src_cmd(
-            files,
-            ctx.obj["proj_hint"],
-            ctx.obj["proj_dir"],
-            ctx.obj["settings"],
-            ctx.obj["quiet"],
-            batch=ctx.obj["batch"],
-            gui=ctx.obj["gui"],
-            daemon=ctx.obj["daemon"],
-        )
-    )
+    return add_files_cmd(files, Fileset.SOURCES, ctx)
 
 
 @cli.command("add-xdc")
 @click.argument("files", type=click.Path(path_type=Path, exists=True), nargs=-1, required=True)
-@click.pass_context
-def add_xdc(ctx, files):
+@vivado_command()
+def add_xdc(ctx: VprojContext, files):
     """Add constraint files (.xdc) to constrs_1."""
-    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
-    raise SystemExit(
-        add_xdc_cmd(
-            files,
-            ctx.obj["proj_hint"],
-            ctx.obj["proj_dir"],
-            ctx.obj["settings"],
-            ctx.obj["quiet"],
-            batch=ctx.obj["batch"],
-            gui=ctx.obj["gui"],
-            daemon=ctx.obj["daemon"],
-        )
-    )
+    return add_files_cmd(files, Fileset.CONSTRAINTS, ctx)
 
 
 @cli.command("add-sim")
 @click.argument("files", type=click.Path(path_type=Path, exists=True), nargs=-1, required=True)
-@click.pass_context
-def add_sim(ctx, files):
+@vivado_command()
+def add_sim(ctx: VprojContext, files):
     """Add testbench files to sim_1."""
-    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
-    raise SystemExit(
-        add_sim_cmd(
-            files,
-            ctx.obj["proj_hint"],
-            ctx.obj["proj_dir"],
-            ctx.obj["settings"],
-            ctx.obj["quiet"],
-            batch=ctx.obj["batch"],
-            gui=ctx.obj["gui"],
-            daemon=ctx.obj["daemon"],
-        )
-    )
+    return add_files_cmd(files, Fileset.SIMULATION, ctx)
 
 
 @cli.command("add-ip")
 @click.argument("files", type=click.Path(path_type=Path, exists=True), nargs=-1, required=True)
-@click.pass_context
-def add_ip(ctx, files):
+@vivado_command()
+def add_ip(ctx: VprojContext, files):
     """Add IP files (.xci, .bd) to sources_1."""
-    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
-    raise SystemExit(
-        add_ip_cmd(
-            files,
-            ctx.obj["proj_hint"],
-            ctx.obj["proj_dir"],
-            ctx.obj["settings"],
-            ctx.obj["quiet"],
-            batch=ctx.obj["batch"],
-            gui=ctx.obj["gui"],
-            daemon=ctx.obj["daemon"],
-        )
-    )
+    return add_files_cmd(files, Fileset.SOURCES, ctx)
 
 
 # --- Remove command ---
@@ -797,17 +753,44 @@ def include_ls(ctx):
     from .project import include_list_cmd
 
     check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
-    raise SystemExit(
-        include_list_cmd(
-            ctx.obj["proj_hint"],
-            ctx.obj["proj_dir"],
-            ctx.obj["settings"],
-            ctx.obj["quiet"],
-            batch=ctx.obj["batch"],
-            gui=ctx.obj["gui"],
-            daemon=ctx.obj["daemon"],
-        )
+
+    no_color = ctx.obj.get("no_color", False)
+
+    dirs = include_list_cmd(
+        ctx.obj["proj_hint"],
+        ctx.obj["proj_dir"],
+        ctx.obj["settings"],
+        ctx.obj["quiet"],
+        batch=ctx.obj["batch"],
+        gui=ctx.obj["gui"],
+        daemon=ctx.obj["daemon"],
+        return_data=True,
     )
+
+    if isinstance(dirs, int):
+        raise SystemExit(dirs)
+
+    if not dirs:
+        click.echo("No include directories configured")
+        raise SystemExit(0)
+
+    if no_color:
+        for d in dirs:
+            click.echo(display_path(d))
+    else:
+        from rich.console import Console
+        from rich.table import Table
+
+        console = Console()
+        table = Table(show_header=True)
+        table.add_column("Include Directory")
+
+        for d in dirs:
+            table.add_row(display_path(d))
+
+        console.print(table)
+
+    raise SystemExit(0)
 
 
 @include.command("add")

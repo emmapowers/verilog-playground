@@ -8,6 +8,8 @@ from typing import Optional, Tuple
 
 import click
 
+from .constants import Fileset
+from .context import VprojContext
 from .vivado import (
     find_xpr,
     make_smart_close,
@@ -73,25 +75,23 @@ foreach fs [list sources_1 constrs_1 sim_1] {
         )
 
 
-def _add_files_to_fileset(
+def add_files_cmd(
     files: Tuple[Path, ...],
-    fileset: str,
-    proj_hint: Optional[Path],
-    proj_dir: Optional[Path],
-    settings: Optional[Path],
-    quiet: bool,
-    batch: bool = False,
-    gui: bool = False,
-    daemon: bool = False,
+    fileset: Fileset,
+    ctx: VprojContext,
 ) -> int:
-    """Add files to a specific fileset."""
-    xpr = find_xpr(proj_hint, proj_dir)
+    """Add files to a specific fileset.
+
+    This is the unified function for adding files. The individual add_*_cmd
+    functions are thin wrappers for backwards compatibility.
+    """
+    xpr = find_xpr(ctx.proj_hint, ctx.proj_dir)
     lines: list[str] = [make_smart_open(xpr)]
 
     for p in files:
         lines.append(f'puts "ADD {fileset} {p.name}"')
         lines.append(f"add_files -fileset {fileset} {tcl_quote(p.resolve())}")
-        if fileset == "constrs_1":
+        if fileset == Fileset.CONSTRAINTS:
             lines.append(f"set f [get_files -quiet {tcl_quote(p.resolve())}]")
             lines.append(
                 "if {[llength $f] > 0} {"
@@ -102,12 +102,33 @@ def _add_files_to_fileset(
     lines.append(make_smart_close())
     tcl = "\n".join(lines)
     code = run_vivado_tcl_auto(
-        tcl, proj_dir=proj_dir, settings=settings, quiet=quiet,
-        batch=batch, gui=gui, daemon=daemon
+        tcl, proj_dir=ctx.proj_dir, settings=ctx.settings, quiet=ctx.quiet,
+        batch=ctx.batch, gui=ctx.gui, daemon=ctx.daemon
     )
-    if code == 0 and not quiet:
+    if code == 0 and not ctx.quiet:
         click.echo(f"ADD ({fileset}): done.")
     return code
+
+
+def _make_ctx(
+    proj_hint: Optional[Path],
+    proj_dir: Optional[Path],
+    settings: Optional[Path],
+    quiet: bool,
+    batch: bool,
+    gui: bool,
+    daemon: bool,
+) -> VprojContext:
+    """Create VprojContext from individual parameters (for backwards compat)."""
+    return VprojContext(
+        proj_hint=proj_hint,
+        proj_dir=proj_dir,
+        settings=settings,
+        quiet=quiet,
+        batch=batch,
+        gui=gui,
+        daemon=daemon,
+    )
 
 
 def add_src_cmd(
@@ -121,10 +142,8 @@ def add_src_cmd(
     daemon: bool = False,
 ) -> int:
     """Add HDL source files (.v, .sv, .vhd, .vh, .svh) to sources_1."""
-    return _add_files_to_fileset(
-        files, "sources_1", proj_hint, proj_dir, settings, quiet,
-        batch=batch, gui=gui, daemon=daemon
-    )
+    ctx = _make_ctx(proj_hint, proj_dir, settings, quiet, batch, gui, daemon)
+    return add_files_cmd(files, Fileset.SOURCES, ctx)
 
 
 def add_xdc_cmd(
@@ -138,10 +157,8 @@ def add_xdc_cmd(
     daemon: bool = False,
 ) -> int:
     """Add constraint files (.xdc) to constrs_1."""
-    return _add_files_to_fileset(
-        files, "constrs_1", proj_hint, proj_dir, settings, quiet,
-        batch=batch, gui=gui, daemon=daemon
-    )
+    ctx = _make_ctx(proj_hint, proj_dir, settings, quiet, batch, gui, daemon)
+    return add_files_cmd(files, Fileset.CONSTRAINTS, ctx)
 
 
 def add_sim_cmd(
@@ -155,10 +172,8 @@ def add_sim_cmd(
     daemon: bool = False,
 ) -> int:
     """Add testbench files to sim_1."""
-    return _add_files_to_fileset(
-        files, "sim_1", proj_hint, proj_dir, settings, quiet,
-        batch=batch, gui=gui, daemon=daemon
-    )
+    ctx = _make_ctx(proj_hint, proj_dir, settings, quiet, batch, gui, daemon)
+    return add_files_cmd(files, Fileset.SIMULATION, ctx)
 
 
 def add_ip_cmd(
@@ -172,10 +187,8 @@ def add_ip_cmd(
     daemon: bool = False,
 ) -> int:
     """Add IP files (.xci, .bd) to sources_1."""
-    return _add_files_to_fileset(
-        files, "sources_1", proj_hint, proj_dir, settings, quiet,
-        batch=batch, gui=gui, daemon=daemon
-    )
+    ctx = _make_ctx(proj_hint, proj_dir, settings, quiet, batch, gui, daemon)
+    return add_files_cmd(files, Fileset.SOURCES, ctx)
 
 
 def remove_cmd(
@@ -346,27 +359,46 @@ def include_list_cmd(
     batch: bool = False,
     gui: bool = False,
     daemon: bool = False,
-) -> int:
-    """List include directories from project."""
+    return_data: bool = False,
+) -> int | list[Path]:
+    """List include directories from project.
+
+    Args:
+        return_data: If True, return list of Path objects instead of exit code.
+    """
     xpr = find_xpr(proj_hint, proj_dir)
     tcl = (
         make_smart_open(xpr)
         + r"""
 set inc_dirs [get_property include_dirs [get_filesets sources_1]]
-if {[llength $inc_dirs] == 0} {
-    puts "No include directories configured"
-} else {
-    foreach d $inc_dirs {
-        puts "INCLUDE|$d"
-    }
+foreach d $inc_dirs {
+    puts "INCLUDE|$d"
 }
 """
         + make_smart_close()
     )
-    return run_vivado_tcl_auto(
-        tcl, proj_dir=proj_dir, settings=settings, quiet=quiet,
-        batch=batch, gui=gui, daemon=daemon
-    )
+
+    if return_data:
+        result = run_vivado_tcl_auto(
+            tcl, proj_dir=proj_dir, settings=settings, quiet=True,
+            batch=batch, gui=gui, daemon=daemon, return_output=True
+        )
+        code, output = result
+        if code != 0:
+            return []
+
+        dirs = []
+        for line in output.splitlines():
+            if line.startswith("INCLUDE|"):
+                path_str = line[8:]
+                if path_str:
+                    dirs.append(Path(path_str))
+        return dirs
+    else:
+        return run_vivado_tcl_auto(
+            tcl, proj_dir=proj_dir, settings=settings, quiet=quiet,
+            batch=batch, gui=gui, daemon=daemon
+        )
 
 
 def include_add_cmd(
@@ -708,6 +740,7 @@ puts "INFO|include_dirs|$inc_dirs"
 # Re-export for CLI
 __all__ = [
     "list_cmd",
+    "add_files_cmd",
     "add_src_cmd",
     "add_xdc_cmd",
     "add_sim_cmd",

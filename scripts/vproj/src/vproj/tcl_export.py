@@ -10,8 +10,8 @@ import click
 
 from .vivado import (
     find_xpr,
-    make_epilogue_close_project,
-    make_prelude_open_project,
+    make_smart_close,
+    make_smart_open,
     run_vivado_tcl_auto,
     tcl_quote,
 )
@@ -39,7 +39,7 @@ def export_tcl_cmd(
         flags += ["-no_copy_sources"]
     flags_str = " ".join(flags)
 
-    tcl = make_prelude_open_project(xpr)
+    tcl = make_smart_open(xpr)
     if not keep_dcp:
         tcl += r"""
 # clear incremental checkpoints on runs and steps
@@ -72,7 +72,7 @@ if {[llength $_rm]} { remove_files -quiet $_rm }
     tcl += f"""
 file mkdir [file dirname {tcl_quote(out_tcl.resolve())}]
 write_project_tcl {flags_str} {tcl_quote(out_tcl.resolve())}
-""" + make_epilogue_close_project()
+""" + make_smart_close()
 
     code = run_vivado_tcl_auto(
         tcl, proj_dir=proj_dir, settings=settings, quiet=quiet,

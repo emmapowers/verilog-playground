@@ -16,40 +16,42 @@ from rich.console import Console
 from rich.live import Live
 from rich.text import Text
 
+from .constants import FileKind, Fileset
+
 PROJECT_DIR_DEFAULT = "project_files"
 
 # File extension to kind mapping
-EXT_KIND = {
+EXT_KIND: dict[str, FileKind] = {
     # HDL
-    ".v": "hdl",
-    ".sv": "hdl",
-    ".vhd": "hdl",
-    ".vhdl": "hdl",
-    ".xci": "ip",
-    ".bd": "ip",
+    ".v": FileKind.HDL,
+    ".sv": FileKind.HDL,
+    ".vhd": FileKind.HDL,
+    ".vhdl": FileKind.HDL,
+    ".xci": FileKind.IP,
+    ".bd": FileKind.IP,
     # Headers
-    ".vh": "header",
-    ".svh": "header",
+    ".vh": FileKind.HEADER,
+    ".svh": FileKind.HEADER,
     # Constraints
-    ".xdc": "xdc",
+    ".xdc": FileKind.XDC,
     # Other
-    ".mem": "other",
-    ".tcl": "other",
+    ".mem": FileKind.OTHER,
+    ".tcl": FileKind.OTHER,
 }
 
-KIND_FILESET = {
-    "hdl": "sources_1",
-    "header": "sources_1",
-    "ip": "sources_1",
-    "xdc": "constrs_1",
-    "sim": "sim_1",
-    "other": "sources_1",
+KIND_FILESET: dict[FileKind, Fileset] = {
+    FileKind.HDL: Fileset.SOURCES,
+    FileKind.HEADER: Fileset.SOURCES,
+    FileKind.IP: Fileset.SOURCES,
+    FileKind.XDC: Fileset.CONSTRAINTS,
+    FileKind.SIM: Fileset.SIMULATION,
+    FileKind.OTHER: Fileset.SOURCES,
 }
 
 VALID_KINDS = tuple(sorted(set(KIND_FILESET.keys())))
 
 
-def detect_kind(path: Path) -> str:
+def detect_kind(path: Path) -> FileKind:
     """Detect file kind from extension and path."""
     ext = path.suffix.lower()
     k = EXT_KIND.get(ext)
@@ -59,8 +61,8 @@ def detect_kind(path: Path) -> str:
     if ext in {".v", ".sv", ".vhd", ".vhdl"} and any(
         p in {"sim", "tb", "testbench"} for p in path.parts
     ):
-        return "sim"
-    return "other"
+        return FileKind.SIM
+    return FileKind.OTHER
 
 
 def tcl_quote(p: Path) -> str:
@@ -446,23 +448,6 @@ if {$::_vproj_did_open && ![info exists ::vproj_server_mode]} {
     close_project
 }
 """
-
-
-# Keep old functions for backwards compatibility during transition
-def make_prelude_open_project(xpr: Path) -> str:
-    """Generate TCL to open a project with suppressed INFO messages.
-
-    DEPRECATED: Use make_smart_open() instead for server-aware behavior.
-    """
-    return make_smart_open(xpr)
-
-
-def make_epilogue_close_project() -> str:
-    """Generate TCL to re-enable messages and close project.
-
-    DEPRECATED: Use make_smart_close() instead for server-aware behavior.
-    """
-    return make_smart_close()
 
 
 def find_xpr(hint: Optional[Path], proj_dir: Optional[Path] = None) -> Path:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -11,6 +10,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.markup import escape
 
+from .logs import extract_messages
 from .progress import ProgressTable, StageStatus
 from .vivado import (
     PROJECT_DIR_DEFAULT,
@@ -89,27 +89,6 @@ puts "CRIT_WARNINGS|[get_property CRITICAL_WARNING_COUNT [get_runs {run_name}]]"
         errors=int(data.get("ERRORS", "0") or "0"),
         critical_warnings=int(data.get("CRIT_WARNINGS", "0") or "0"),
     )
-
-
-def extract_messages(log_path: Path) -> list[tuple[str, str]]:
-    """Extract WARNING/ERROR/CRITICAL WARNING lines from Vivado log.
-
-    Returns list of (level, message) tuples.
-    """
-    if not log_path.exists():
-        return []
-
-    messages = []
-    # Match Vivado message format: WARNING: [Tag] message or ERROR: [Tag] message
-    pattern = re.compile(r"^(WARNING|ERROR|CRITICAL WARNING):\s*(.+)$")
-
-    for line in log_path.read_text().splitlines():
-        match = pattern.match(line)
-        if match:
-            level, msg = match.groups()
-            messages.append((level, msg))
-
-    return messages
 
 
 def format_log_summary(proj_dir: Path, run_name: str) -> list[str]:
