@@ -52,7 +52,7 @@ def get_hook_script(mode: HookMode) -> str:
 # mode={mode.value}
 
 # Export project.tcl before commit
-if ! vproj export-tcl -q 2>/dev/null; then
+if ! vproj -q export-tcl 2>/dev/null; then
     echo "Warning: vproj export-tcl failed (Vivado unavailable?)" >&2
 fi
 
