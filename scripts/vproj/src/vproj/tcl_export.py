@@ -15,6 +15,7 @@ from .vivado import (
     run_vivado_tcl_auto,
     tcl_quote,
 )
+from .utils import display_path
 
 
 def export_tcl_cmd(
@@ -99,12 +100,21 @@ write_project_tcl {flags_str} {tcl_quote(out_tcl.resolve())}
         txt = re.sub(r'(?mi)^.*incremental_checkpoint.*$', '', txt)
         txt = re.sub(r'(?m)^.*utils_1/imports/.*$', '', txt)
 
+        # Strip non-portable board_part_repo_paths (user-specific xhub locations)
+        # Preserves project-relative paths, custom shared repos, vendor-specific repos
+        # Note: TCL value may contain nested quotes like "[file normalize "$origin_dir/..."]"
+        txt = re.sub(
+            r'(?m)^set_property\s+-name\s+"board_part_repo_paths".*\.Xilinx/Vivado/.*xhub.*$\n?',
+            '',
+            txt,
+        )
+
         # Clean up extra blank lines
         txt = re.sub(r'\n{3,}', '\n\n', txt)
 
         out_tcl.write_text(txt)
 
     if code == 0 and not quiet:
-        click.echo(f"Wrote {out_tcl} (from {xpr.parent.name}/).")
+        click.echo(f"Wrote {display_path(out_tcl)} (from {display_path(xpr.parent)}/).")
 
     return code

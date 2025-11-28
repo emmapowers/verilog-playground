@@ -620,6 +620,91 @@ close_design -quiet
     return cells
 
 
+# --- Project info ---
+
+
+def info_cmd(
+    proj_hint: Optional[Path],
+    proj_dir: Optional[Path],
+    settings: Optional[Path],
+    quiet: bool,
+    batch: bool = False,
+    gui: bool = False,
+    daemon: bool = False,
+) -> dict:
+    """Get project information and metadata.
+
+    Returns a dict with project info, or empty dict on error.
+    """
+    xpr = find_xpr(proj_hint, proj_dir)
+
+    tcl = (
+        make_smart_open(xpr)
+        + r"""
+set proj [current_project]
+
+# Basic project info
+puts "INFO|project_name|[get_property NAME $proj]"
+puts "INFO|project_dir|[get_property DIRECTORY $proj]"
+
+# Part and board
+puts "INFO|part|[get_property part $proj]"
+puts "INFO|board_part|[get_property board_part $proj]"
+
+# Top module
+puts "INFO|top|[get_property TOP [get_filesets sources_1]]"
+
+# Target language
+puts "INFO|target_language|[get_property TARGET_LANGUAGE $proj]"
+
+# Simulator
+puts "INFO|simulator|[get_property TARGET_SIMULATOR $proj]"
+
+# Vivado version and path
+puts "INFO|vivado_version|[version -short]"
+puts "INFO|vivado_path|$::env(XILINX_VIVADO)"
+
+# File counts
+set src_count [llength [get_files -of_objects [get_filesets sources_1] -quiet]]
+set xdc_count [llength [get_files -of_objects [get_filesets constrs_1] -quiet]]
+set sim_count [llength [get_files -of_objects [get_filesets sim_1] -quiet]]
+puts "INFO|source_count|$src_count"
+puts "INFO|constraint_count|$xdc_count"
+puts "INFO|sim_count|$sim_count"
+
+# Include dirs
+set inc_dirs [get_property include_dirs [get_filesets sources_1]]
+puts "INFO|include_dirs|$inc_dirs"
+"""
+        + make_smart_close()
+    )
+
+    result = run_vivado_tcl_auto(
+        tcl,
+        proj_dir=proj_dir,
+        settings=settings,
+        quiet=True,
+        batch=batch,
+        gui=gui,
+        daemon=daemon,
+        return_output=True,
+    )
+
+    code, output = result
+    if code != 0:
+        return {}
+
+    info = {"xpr_path": str(xpr)}
+    for line in output.splitlines():
+        if line.startswith("INFO|"):
+            parts = line[5:].split("|", 1)
+            if len(parts) == 2:
+                key, value = parts
+                info[key] = value
+
+    return info
+
+
 # Re-export for CLI
 __all__ = [
     "list_cmd",
@@ -636,4 +721,5 @@ __all__ = [
     "get_top_module",
     "set_top_module",
     "get_hierarchy",
+    "info_cmd",
 ]

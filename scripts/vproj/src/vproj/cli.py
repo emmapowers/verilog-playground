@@ -19,20 +19,38 @@ from .project import (
     get_top_module,
     set_top_module,
     get_hierarchy,
+    info_cmd,
 )
 from .tcl_export import export_tcl_cmd
 from .tcl_import import import_tcl_cmd
 from .build import build_cmd
+from .board import (
+    board_info_cmd,
+    board_install_cmd,
+    board_uninstall_cmd,
+    board_list_cmd,
+    board_refresh_cmd,
+    board_update_cmd,
+    board_set_cmd,
+    board_clear_cmd,
+)
+from .part import (
+    part_info_cmd,
+    part_set_cmd,
+    part_list_cmd,
+)
 from .program import program_cmd
 from .clean import clean_cmd
+from .utils import display_path
 
 
 # Command categories for help formatting
 COMMAND_CATEGORIES = {
-    "Project": ["ls", "top", "tree", "add-src", "add-xdc", "add-sim", "add-ip", "rm", "mv", "include"],
+    "Project": ["info", "ls", "top", "tree", "add-src", "add-xdc", "add-sim", "add-ip", "rm", "mv", "include"],
     "Build": ["build", "program", "clean"],
     "Verify": ["check", "lint", "sim"],
     "TCL": ["export-tcl", "import-tcl"],
+    "Board": ["board"],
     "Server": ["server"],
 }
 
@@ -141,16 +159,86 @@ def cli(
     )
 
 
+# --- Project info ---
+
+
+@cli.command("info")
+@click.pass_context
+def info_(ctx):
+    """Show project information and metadata."""
+    from .daemon import find_server
+
+    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
+
+    info = info_cmd(
+        ctx.obj["proj_hint"],
+        ctx.obj["proj_dir"],
+        ctx.obj["settings"],
+        ctx.obj["quiet"],
+        batch=ctx.obj["batch"],
+        gui=ctx.obj["gui"],
+        daemon=ctx.obj["daemon"],
+    )
+
+    if not info:
+        click.echo("Failed to get project info", err=True)
+        raise SystemExit(1)
+
+    no_color = ctx.obj.get("no_color", False)
+
+    def label(text: str) -> str:
+        if no_color:
+            return text
+        return click.style(text, fg="cyan")
+
+    def value(text: str, bold: bool = False) -> str:
+        if no_color or not bold:
+            return text
+        return click.style(text, bold=True)
+
+    # Project
+    click.echo(f"{label('Project:')}      {value(info.get('project_name', ''), bold=True)}")
+    click.echo(f"{label('XPR Path:')}     {display_path(info.get('xpr_path', ''))}")
+
+    # Vivado
+    click.echo(f"{label('Vivado:')}       {info.get('vivado_version', '')}")
+    click.echo(f"{label('Vivado Path:')}  {display_path(info.get('vivado_path', ''))}")
+
+    # Part & Board
+    part = info.get("part", "")
+    board = info.get("board_part", "")
+    click.echo(f"{label('Part:')}         {part}")
+    if board:
+        click.echo(f"{label('Board:')}        {board}")
+
+    # Top module
+    top = info.get("top", "")
+    click.echo(f"{label('Top Module:')}   {value(top, bold=True)}")
+
+    # Files
+    src = info.get("source_count", "0")
+    xdc = info.get("constraint_count", "0")
+    sim = info.get("sim_count", "0")
+    click.echo(f"{label('Files:')}        {src} sources, {xdc} constraints, {sim} sim")
+
+    # Include dirs
+    inc_dirs = info.get("include_dirs", "")
+    if inc_dirs:
+        click.echo(f"{label('Include Dirs:')} {inc_dirs}")
+
+    # Server status
+    server_info = find_server(ctx.obj["proj_dir"])
+    if server_info.running:
+        mode = "GUI" if server_info.is_gui else "daemon"
+        if no_color:
+            click.echo(f"Server:        running ({mode}) on port {server_info.port}")
+        else:
+            click.echo(f"{label('Server:')}       {click.style('running', fg='green')} ({mode}) on port {server_info.port}")
+    else:
+        click.echo(f"{label('Server:')}       not running")
+
+
 # --- File listing ---
-
-
-def _relative_path(path: str) -> str:
-    """Convert absolute path to relative path from current working directory."""
-    try:
-        return str(Path(path).relative_to(Path.cwd()))
-    except ValueError:
-        # Path is not relative to cwd, return as-is
-        return path
 
 
 @cli.command("ls")
@@ -190,7 +278,7 @@ def ls_(ctx):
         for fileset, path, ftype in files:
             # Check if this file contains the top module
             filename = Path(path).stem
-            rel_path = _relative_path(path)
+            rel_path = display_path(path)
             marker = " [TOP]" if top_module and filename == top_module else ""
             click.echo(f"{fileset}\t{rel_path}\t{ftype}{marker}")
 
@@ -224,7 +312,7 @@ def ls_(ctx):
         for fileset, path, ftype in files:
             # Check if this file contains the top module
             filename = Path(path).stem
-            rel_path = _relative_path(path)
+            rel_path = display_path(path)
             if top_module and filename == top_module:
                 # Highlight the top module file with marker at start
                 table.add_row(f"[bold green]{fileset}[/bold green]", f"[bold green]{rel_path}[/bold green]", f"[bold green]{ftype} *[/bold green]")
@@ -529,8 +617,13 @@ def export_tcl(ctx, out_tcl, rel_to, no_copy_sources, keep_dcp):
 @click.option("--workdir", type=click.Path(path_type=Path), help="cd before sourcing TCL.")
 @click.option("--force", is_flag=True, help="Overwrite existing project.")
 @click.option("--wipe", is_flag=True, help="Delete proj-dir before import.")
+@click.option(
+    "--no-board-install",
+    is_flag=True,
+    help="Skip automatic board file installation from xhub.",
+)
 @click.pass_context
-def import_tcl(ctx, project_tcl, workdir, force, wipe):
+def import_tcl(ctx, project_tcl, workdir, force, wipe, no_board_install):
     """Import project from a TCL script."""
     check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
     raise SystemExit(
@@ -545,6 +638,7 @@ def import_tcl(ctx, project_tcl, workdir, force, wipe):
             batch=ctx.obj["batch"],
             gui=ctx.obj["gui"],
             daemon=ctx.obj["daemon"],
+            install_board=not no_board_install,
         )
     )
 
@@ -621,11 +715,14 @@ def clean(ctx):
 @click.option("--verilator", "use_verilator", is_flag=True, help="Use Verilator.")
 @click.option("--fst", "use_fst", is_flag=True, help="Output FST instead of VCD.")
 @click.option("-o", "--output", type=click.Path(path_type=Path), help="Output waveform path.")
+@click.option("-t", "--timeout", "timeout", type=str, default=None,
+              help="Max simulation time (e.g., '1ms', '10us'). Without this, runs until $finish.")
+@click.option("--open", "open_waveform", is_flag=True, help="Open waveform in gtkwave after simulation.")
 @click.option("-I", "--include", "include_dirs", multiple=True,
               type=click.Path(path_type=Path, exists=True),
               help="Add include directory (can specify multiple times).")
 @click.pass_context
-def sim(ctx, testbench, use_xsim, use_iverilog, use_verilator, use_fst, output, include_dirs):
+def sim(ctx, testbench, use_xsim, use_iverilog, use_verilator, use_fst, output, timeout, open_waveform, include_dirs):
     """Run simulation and generate waveform."""
     from .sim import sim_cmd
 
@@ -638,6 +735,8 @@ def sim(ctx, testbench, use_xsim, use_iverilog, use_verilator, use_fst, output, 
             use_verilator,
             use_fst,
             output,
+            timeout,
+            open_waveform,
             include_dirs,
             ctx.obj["proj_hint"],
             ctx.obj["proj_dir"],
@@ -746,6 +845,281 @@ def include_rm(ctx, dirs):
             ctx.obj["proj_hint"],
             ctx.obj["proj_dir"],
             ctx.obj["settings"],
+            ctx.obj["quiet"],
+            batch=ctx.obj["batch"],
+            gui=ctx.obj["gui"],
+            daemon=ctx.obj["daemon"],
+        )
+    )
+
+
+# --- Board commands ---
+
+
+@cli.group("board")
+def board():
+    """Manage board files for the project."""
+    pass
+
+
+@board.command("info")
+@click.pass_context
+def board_info(ctx):
+    """Show current board configuration."""
+    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
+    raise SystemExit(
+        board_info_cmd(
+            ctx.obj["proj_hint"],
+            ctx.obj["proj_dir"],
+            ctx.obj["settings"],
+            ctx.obj["quiet"],
+            batch=ctx.obj["batch"],
+            gui=ctx.obj["gui"],
+            daemon=ctx.obj["daemon"],
+        )
+    )
+
+
+@board.command("install")
+@click.argument("pattern", required=False)
+@click.pass_context
+def board_install(ctx, pattern):
+    """Install board files from xhub store.
+
+    If PATTERN is provided, installs boards matching that pattern.
+    Otherwise, installs board files for the current project's board.
+    """
+    from .daemon import restart_daemon
+
+    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
+    result = board_install_cmd(
+        pattern,
+        ctx.obj["proj_hint"],
+        ctx.obj["proj_dir"],
+        ctx.obj["settings"],
+        ctx.obj["quiet"],
+        batch=ctx.obj["batch"],
+        gui=ctx.obj["gui"],
+        daemon=ctx.obj["daemon"],
+    )
+    if result == 0:
+        restart_daemon(ctx.obj["proj_dir"], ctx.obj["settings"], ctx.obj["quiet"])
+    raise SystemExit(result)
+
+
+@board.command("list")
+@click.argument("pattern", required=False)
+@click.pass_context
+def board_list(ctx, pattern):
+    """List available boards in xhub store.
+
+    If PATTERN is provided, filters boards matching that pattern.
+    """
+    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
+    raise SystemExit(
+        board_list_cmd(
+            pattern,
+            ctx.obj["settings"],
+            ctx.obj["proj_dir"],
+            ctx.obj["quiet"],
+            batch=ctx.obj["batch"],
+            gui=ctx.obj["gui"],
+            daemon=ctx.obj["daemon"],
+        )
+    )
+
+
+@board.command("uninstall")
+@click.argument("pattern")
+@click.pass_context
+def board_uninstall(ctx, pattern):
+    """Uninstall board files from xhub store.
+
+    PATTERN specifies which boards to uninstall (e.g., 'nexys-a7-100t').
+    """
+    from .daemon import restart_daemon
+
+    # Always check with batch=True because xhub::uninstall only works in batch mode
+    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], batch=True)
+    result = board_uninstall_cmd(
+        pattern,
+        ctx.obj["settings"],
+        ctx.obj["proj_dir"],
+        ctx.obj["quiet"],
+        batch=ctx.obj["batch"],
+        gui=ctx.obj["gui"],
+        daemon=ctx.obj["daemon"],
+    )
+    if result == 0:
+        restart_daemon(ctx.obj["proj_dir"], ctx.obj["settings"], ctx.obj["quiet"])
+    raise SystemExit(result)
+
+
+@board.command("refresh")
+@click.pass_context
+def board_refresh(ctx):
+    """Refresh board catalog from GitHub.
+
+    Fetches the latest board file list from Xilinx's board store.
+    """
+    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
+    raise SystemExit(
+        board_refresh_cmd(
+            ctx.obj["settings"],
+            ctx.obj["proj_dir"],
+            ctx.obj["quiet"],
+            batch=ctx.obj["batch"],
+            gui=ctx.obj["gui"],
+            daemon=ctx.obj["daemon"],
+        )
+    )
+
+
+@board.command("update")
+@click.argument("pattern", required=False)
+@click.pass_context
+def board_update(ctx, pattern):
+    """Update installed board files to latest versions.
+
+    If PATTERN is provided, updates only boards matching that pattern.
+    Otherwise, updates all installed boards.
+    """
+    from .daemon import restart_daemon
+
+    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
+    result = board_update_cmd(
+        pattern,
+        ctx.obj["settings"],
+        ctx.obj["proj_dir"],
+        ctx.obj["quiet"],
+        batch=ctx.obj["batch"],
+        gui=ctx.obj["gui"],
+        daemon=ctx.obj["daemon"],
+    )
+    if result == 0:
+        restart_daemon(ctx.obj["proj_dir"], ctx.obj["settings"], ctx.obj["quiet"])
+    raise SystemExit(result)
+
+
+@board.command("set")
+@click.argument("board_part")
+@click.pass_context
+def board_set(ctx, board_part):
+    """Set the board for this project.
+
+    BOARD_PART is the full board identifier (e.g., 'digilentinc.com:nexys-a7-100t:part0:1.3').
+
+    Setting a board also sets the FPGA part automatically.
+    """
+    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
+    raise SystemExit(
+        board_set_cmd(
+            board_part,
+            ctx.obj["proj_hint"],
+            ctx.obj["proj_dir"],
+            ctx.obj["settings"],
+            ctx.obj["quiet"],
+            batch=ctx.obj["batch"],
+            gui=ctx.obj["gui"],
+            daemon=ctx.obj["daemon"],
+        )
+    )
+
+
+@board.command("clear")
+@click.pass_context
+def board_clear(ctx):
+    """Clear the board from this project.
+
+    The FPGA part is retained.
+    """
+    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
+    raise SystemExit(
+        board_clear_cmd(
+            ctx.obj["proj_hint"],
+            ctx.obj["proj_dir"],
+            ctx.obj["settings"],
+            ctx.obj["quiet"],
+            batch=ctx.obj["batch"],
+            gui=ctx.obj["gui"],
+            daemon=ctx.obj["daemon"],
+        )
+    )
+
+
+# --- Part commands ---
+
+
+@cli.group("part", invoke_without_command=True)
+@click.pass_context
+def part(ctx):
+    """Manage the FPGA part for the project.
+
+    Use 'vproj part' to show current FPGA part.
+    Use 'vproj board' to manage board files instead.
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(part_info)
+
+
+@part.command("info")
+@click.pass_context
+def part_info(ctx):
+    """Show current FPGA part configuration."""
+    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
+    raise SystemExit(
+        part_info_cmd(
+            ctx.obj["proj_hint"],
+            ctx.obj["proj_dir"],
+            ctx.obj["settings"],
+            ctx.obj["quiet"],
+            batch=ctx.obj["batch"],
+            gui=ctx.obj["gui"],
+            daemon=ctx.obj["daemon"],
+        )
+    )
+
+
+@part.command("set")
+@click.argument("part_name")
+@click.pass_context
+def part_set(ctx, part_name):
+    """Set the FPGA part directly.
+
+    PART_NAME is the FPGA part identifier (e.g., 'xc7a100tcsg324-1').
+
+    Note: This clears any board_part setting. Use 'vproj board set' instead
+    if you want board-specific pin assignments and IP.
+    """
+    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
+    raise SystemExit(
+        part_set_cmd(
+            part_name,
+            ctx.obj["proj_hint"],
+            ctx.obj["proj_dir"],
+            ctx.obj["settings"],
+            ctx.obj["quiet"],
+            batch=ctx.obj["batch"],
+            gui=ctx.obj["gui"],
+            daemon=ctx.obj["daemon"],
+        )
+    )
+
+
+@part.command("list")
+@click.argument("pattern", required=False)
+@click.pass_context
+def part_list(ctx, pattern):
+    """List available FPGA parts.
+
+    If PATTERN is provided, filters parts matching that pattern.
+    """
+    check_vivado_available(ctx.obj["settings"], ctx.obj["proj_dir"], ctx.obj["batch"])
+    raise SystemExit(
+        part_list_cmd(
+            pattern,
+            ctx.obj["settings"],
+            ctx.obj["proj_dir"],
             ctx.obj["quiet"],
             batch=ctx.obj["batch"],
             gui=ctx.obj["gui"],

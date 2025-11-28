@@ -27,6 +27,12 @@ def _get_port_file(proj_dir: Optional[Path] = None) -> Path:
     return pd / ".vproj-port"
 
 
+def _get_interrupt_file(proj_dir: Optional[Path] = None) -> Path:
+    """Get project-local interrupt flag file path."""
+    pd = proj_dir or Path(PROJECT_DIR_DEFAULT)
+    return pd / ".vproj-interrupt"
+
+
 def _get_log_file() -> Path:
     """Get daemon log file path (user-global)."""
     uid = os.getuid()
@@ -260,7 +266,15 @@ def stop_daemon(proj_dir: Optional[Path] = None, quiet: bool = False) -> bool:
     return True
 
 
-def _send_tcl_to_port(port: int, tcl: str, timeout: float = COMMAND_TIMEOUT) -> str:
+from typing import Callable
+
+
+def _send_tcl_to_port(
+    port: int,
+    tcl: str,
+    timeout: float = COMMAND_TIMEOUT,
+    output_callback: Optional[Callable[[str], None]] = None,
+) -> str:
     """
     Send TCL command to a specific port and return result.
 
@@ -268,6 +282,7 @@ def _send_tcl_to_port(port: int, tcl: str, timeout: float = COMMAND_TIMEOUT) -> 
         port: TCP port to connect to
         tcl: TCL code to execute
         timeout: Timeout in seconds
+        output_callback: Optional callback for streaming output lines
 
     Returns:
         Command output
@@ -310,6 +325,13 @@ def _send_tcl_to_port(port: int, tcl: str, timeout: float = COMMAND_TIMEOUT) -> 
                     status = "OK"
                 elif line_str == "ERROR":
                     status = "ERROR"
+                elif line_str.startswith("OUTPUT:"):
+                    # Streaming output line
+                    output_line = line_str[7:]  # Remove "OUTPUT:" prefix
+                    if output_callback:
+                        output_callback(output_line)
+                    else:
+                        response_lines.append(output_line)
                 else:
                     response_lines.append(line_str)
 
@@ -326,6 +348,7 @@ def send_tcl(
     tcl: str,
     proj_dir: Optional[Path] = None,
     timeout: float = COMMAND_TIMEOUT,
+    output_callback: Optional[Callable[[str], None]] = None,
 ) -> str:
     """
     Send TCL command to server and return result.
@@ -334,6 +357,7 @@ def send_tcl(
         tcl: TCL code to execute
         proj_dir: Project directory
         timeout: Timeout in seconds
+        output_callback: Optional callback for streaming output lines
 
     Returns:
         Command output
@@ -346,7 +370,7 @@ def send_tcl(
     if not info.running:
         raise RuntimeError("Server not running")
 
-    return _send_tcl_to_port(info.port, tcl, timeout)
+    return _send_tcl_to_port(info.port, tcl, timeout, output_callback)
 
 
 def is_server_available(proj_dir: Optional[Path] = None) -> bool:
@@ -435,3 +459,70 @@ def uninstall_server_from_init() -> bool:
 
     init_file.write_text(content)
     return True
+
+
+def restart_daemon(
+    proj_dir: Optional[Path] = None,
+    settings: Optional[Path] = None,
+    quiet: bool = False,
+) -> bool:
+    """
+    Restart the daemon if it's running.
+
+    Use this after operations that invalidate cached data (board install/uninstall/update).
+
+    Returns:
+        True if daemon was restarted or wasn't running
+    """
+    info = find_server(proj_dir)
+    if not info.running:
+        return True
+
+    # GUI mode: can't restart, just warn
+    if info.is_gui:
+        if not quiet:
+            click.echo("Note: Restart Vivado GUI to refresh board/part cache")
+        return True
+
+    if not quiet:
+        click.echo("Restarting daemon to refresh cache...")
+
+    if not stop_daemon(proj_dir, quiet=True):
+        return False
+
+    return start_daemon(proj_dir, settings, quiet=True)
+
+
+def set_interrupt_flag(proj_dir: Optional[Path] = None) -> None:
+    """
+    Set the interrupt flag to signal running commands to stop.
+
+    The flag is a file that TCL commands check periodically.
+    """
+    flag_file = _get_interrupt_file(proj_dir)
+    flag_file.parent.mkdir(parents=True, exist_ok=True)
+    flag_file.touch()
+
+
+def clear_interrupt_flag(proj_dir: Optional[Path] = None) -> None:
+    """
+    Clear the interrupt flag.
+
+    Should be called after command completes or is interrupted.
+    """
+    flag_file = _get_interrupt_file(proj_dir)
+    try:
+        flag_file.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def check_interrupt_flag(proj_dir: Optional[Path] = None) -> bool:
+    """
+    Check if the interrupt flag is set.
+
+    Returns:
+        True if interrupt was requested
+    """
+    flag_file = _get_interrupt_file(proj_dir)
+    return flag_file.exists()

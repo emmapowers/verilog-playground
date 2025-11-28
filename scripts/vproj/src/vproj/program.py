@@ -121,12 +121,13 @@ def program_device(
     proj_dir_path = proj_dir or Path(PROJECT_DIR_DEFAULT)
     console = console or Console()
 
-    def update_progress(progress: int, status: str) -> None:
+    def update_progress(progress: int, status: str, errors: int = 0) -> None:
         if progress_callback:
             progress_callback(StageStatus(
                 name="Programming",
                 progress=progress,
                 status=status,
+                errors=errors,
             ))
 
     # Step 1: Resolve bitfile
@@ -181,7 +182,7 @@ puts "BITFILE|$bf"
     if bitfile_path is None or not bitfile_path.exists():
         if not quiet:
             console.print("[red]ERROR: Bitstream not found. Pass one via argument or build first.[/red]")
-        update_progress(0, "Failed - no bitfile")
+        update_progress(0, "ERROR: No bitfile", errors=1)
         return 3
 
     if not quiet:
@@ -193,9 +194,25 @@ puts "BITFILE|$bf"
     tcl = f"""
 set bitfile {tcl_quote(bitfile_path)}
 
-# Hardware programming
+# Helper to signal errors - uses error in daemon mode, exit in batch mode
+proc vproj_error {{msg code}} {{
+    if {{[info exists ::vproj_server_mode] && $::vproj_server_mode}} {{
+        error $msg
+    }} else {{
+        puts $msg
+        exit $code
+    }}
+}}
+
+# Hardware programming - ensure fresh device enumeration
 open_hw_manager
 catch {{ connect_hw_server -allow_non_jtag }}
+
+# Close any existing target to force refresh (important in daemon mode)
+catch {{ close_hw_target }}
+
+# Refresh server to detect newly connected devices
+catch {{ refresh_hw_server }}
 
 # Some cables need a moment to enumerate
 set tries 10
@@ -207,8 +224,7 @@ while {{$tries > 0}} {{
 }}
 
 if {{[catch {{ get_hw_devices }} devs] || [llength $devs] == 0}} {{
-    puts "ERROR: No JTAG devices visible. Check cable/permissions."
-    exit 4
+    vproj_error "ERROR: No JTAG devices visible. Check cable/permissions." 4
 }}
 
 puts "CONNECTED"
@@ -218,12 +234,22 @@ refresh_hw_device [current_hw_device]
 
 puts "PROGRAMMING"
 
-set_property PROGRAM.FILE $bitfile [current_hw_device]
-program_hw_devices [current_hw_device]
+# Layer 1: Catch explicit TCL errors from programming
+if {{[catch {{
+    set_property PROGRAM.FILE $bitfile [current_hw_device]
+    program_hw_devices [current_hw_device]
+}} err]}} {{
+    vproj_error "ERROR: Programming failed: $err" 5
+}}
+
+# Layer 2: Verify DONE pin is asserted (catches silent failures)
 refresh_hw_device [current_hw_device]
+set done_status [get_property REGISTER.CONFIG_STATUS.BIT14_DONE_PIN [current_hw_device]]
+if {{$done_status != 1}} {{
+    vproj_error "ERROR: Programming verification failed - DONE pin not asserted" 5
+}}
 
 puts "DONE"
-exit 0
 """
 
     # Run programming - we need to track progress through output
@@ -249,13 +275,19 @@ exit 0
         update_progress(100, "Complete")
 
     if code != 0:
+        # Extract the actual error message from output
+        error_msg = "Failed"
+        for line in output.splitlines():
+            if line.startswith("ERROR:"):
+                # Extract message after "ERROR: " prefix
+                error_msg = line[6:].strip()
+                break
+
         if not quiet:
-            console.print("[red]ERROR: Programming failed[/red]")
-            # Show relevant error lines
-            for line in output.splitlines():
-                if "ERROR" in line or "error" in line.lower():
-                    console.print(f"    [dim]{line}[/dim]")
-        update_progress(0, "Failed")
+            console.print(f"[red]ERROR: {error_msg}[/red]")
+
+        # Show 100% red bar to make failure visible
+        update_progress(100, error_msg, errors=1)
         return code
 
     if not quiet:

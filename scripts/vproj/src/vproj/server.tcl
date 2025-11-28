@@ -13,6 +13,35 @@ if {[info exists ::vproj_proj_dir]} {
     set proj_dir [pwd]
 }
 
+# Store proj_dir globally for interrupt checking
+set ::vproj_proj_dir $proj_dir
+
+# Check if interrupt flag is set (file-based signal from Python)
+proc vproj_check_interrupt {} {
+    set flag_file [file join $::vproj_proj_dir ".vproj-interrupt"]
+    if {[file exists $flag_file]} {
+        file delete -force $flag_file
+        error "Interrupted by user"
+    }
+}
+
+# Add xhub board store to board.repoPaths if it exists
+# This ensures installed boards from xhub are visible
+catch {
+    set xhub_base "$::env(HOME)/.Xilinx/Vivado"
+    foreach ver [glob -nocomplain -directory $xhub_base -type d *] {
+        set boards_dir [file join $ver xhub board_store xilinx_board_store XilinxBoardStore Vivado [file tail $ver] boards]
+        if {[file exists $boards_dir]} {
+            set current_paths [get_param board.repoPaths]
+            if {$current_paths eq ""} {
+                set_param board.repoPaths $boards_dir
+            } elseif {[string first $boards_dir $current_paths] == -1} {
+                set_param board.repoPaths "$current_paths:$boards_dir"
+            }
+        }
+    }
+}
+
 # Port file location (project-local)
 set port_file [file join $proj_dir ".vproj-port"]
 
@@ -97,12 +126,11 @@ proc handle_client {client} {
         return
     }
 
-    # Execute the TCL command with stdout capture
-    # Override puts to capture output to client
+    # Execute the TCL command with streaming output
+    # Override puts to send output immediately to client
     set ::_vproj_client $client
-    set ::_vproj_captured {}
 
-    # Save original puts and create capturing version
+    # Save original puts and create streaming version
     rename puts _vproj_orig_puts
     proc puts {args} {
         # Parse puts arguments: puts ?-nonewline? ?channelId? string
@@ -126,9 +154,10 @@ proc handle_client {client} {
             set str [lindex $args 2]
         }
 
-        # Capture stdout, pass through others
+        # Stream stdout to client immediately, pass through others
         if {$channel eq "stdout"} {
-            lappend ::_vproj_captured $str
+            _vproj_orig_puts $::_vproj_client "OUTPUT:$str"
+            flush $::_vproj_client
         } else {
             if {$nonewline} {
                 _vproj_orig_puts -nonewline $channel $str
@@ -151,11 +180,7 @@ proc handle_client {client} {
         }
     } else {
         puts $client "OK"
-        # Send captured stdout first
-        foreach line $::_vproj_captured {
-            puts $client $line
-        }
-        # Then send return value if any
+        # Send return value if any
         if {$result ne ""} {
             foreach line [split $result "\n"] {
                 puts $client $line

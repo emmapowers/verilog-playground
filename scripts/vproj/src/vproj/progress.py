@@ -32,14 +32,15 @@ class StageStatus:
         return self.progress == 100 and not self.is_failed()
 
 
-def make_progress_bar(progress: int, width: int = 30) -> Text:
-    """Create a colored progress bar."""
+def make_progress_bar(progress: int, width: int = 30, failed: bool = False) -> Text:
+    """Create a colored progress bar. Red when failed, green otherwise."""
     filled = int(width * progress / 100)
     empty = width - filled
     bar = Text()
-    bar.append("\u2588" * filled, style="green")
+    style = "red" if failed else "green"
+    bar.append("\u2588" * filled, style=style)
     bar.append("\u2591" * empty, style="dim")
-    bar.append(f" {progress}%", style="bold")
+    bar.append(f" {progress}%", style="bold red" if failed else "bold")
     return bar
 
 
@@ -101,8 +102,10 @@ class ProgressTable:
             is_active = stage == self.active_stage
 
             # Determine label prefix
-            if status and status.progress == 100:
-                prefix = "\u2713"  # checkmark
+            if status and status.is_failed():
+                prefix = "\u2717"  # X mark for failed
+            elif status and status.is_complete():
+                prefix = "\u2713"  # checkmark for complete
             elif is_active:
                 prefix = "\u25b6"  # play arrow
             else:
@@ -115,7 +118,7 @@ class ProgressTable:
                 bar = Text("Waiting...", style="dim")
                 info = ""
             else:
-                bar = make_progress_bar(status.progress)
+                bar = make_progress_bar(status.progress, failed=status.is_failed())
                 info = format_stage_info(status)
 
             table.add_row(label, bar, info)

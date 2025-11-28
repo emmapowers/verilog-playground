@@ -344,6 +344,8 @@ def sim_cmd(
     use_verilator: bool,
     use_fst: bool,
     output: Optional[Path],
+    timeout: Optional[str],
+    open_waveform: bool,
     include_dirs: Tuple[Path, ...],
     proj_hint: Optional[Path],
     proj_dir: Optional[Path],
@@ -403,23 +405,40 @@ def sim_cmd(
         console.print(f"[bold]==> Running simulation with {backend}[/bold]")
         console.print(f"    Testbench: {escape(str(testbench))}")
         console.print(f"    Output: {escape(str(out_file))}")
+        if timeout:
+            console.print(f"    Timeout: {timeout}")
         if all_includes and backend != "xsim":
             console.print(f"    Include paths: {len(all_includes)}")
 
     if backend == "xsim":
-        return _sim_xsim(
-            testbench, out_file, proj_hint, proj_dir, settings, quiet,
+        result = _sim_xsim(
+            testbench, out_file, timeout, proj_hint, proj_dir, settings, quiet,
             batch=batch, gui=gui, daemon=daemon
         )
     elif backend == "iverilog":
-        return _sim_iverilog(testbench, out_file, use_fst, all_includes, proj_dir, quiet, console)
+        result = _sim_iverilog(testbench, out_file, use_fst, all_includes, proj_dir, quiet, console)
     else:
-        return _sim_verilator(testbench, out_file, all_includes, proj_dir, quiet, console)
+        result = _sim_verilator(testbench, out_file, all_includes, proj_dir, quiet, console)
+
+    # Open waveform viewer if requested and waveform file exists
+    # Opens even after Ctrl+C since VCD is saved on interrupt
+    if open_waveform and out_file.exists():
+        if not quiet:
+            console.print(f"[bold]==> Opening waveform in gtkwave[/bold]")
+        subprocess.Popen(
+            ["gtkwave", str(out_file)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    return result
 
 
 def _sim_xsim(
     testbench: Path,
     output: Path,
+    timeout: Optional[str],
     proj_hint: Optional[Path],
     proj_dir: Optional[Path],
     settings: Optional[Path],
@@ -431,8 +450,52 @@ def _sim_xsim(
     """Run simulation with Vivado xsim."""
     xpr = find_xpr(proj_hint, proj_dir)
     tb_name = testbench.stem
+    pd = proj_dir or Path(PROJECT_DIR_DEFAULT)
+
+    # Print warning about infinite simulation if no timeout
+    if not timeout and not quiet:
+        console = Console()
+        console.print("[yellow]    Note: Simulation will run until $finish. Press Ctrl+C to stop.[/yellow]")
+
+    # Build the run command based on timeout
+    if timeout:
+        # Direct run with timeout
+        run_cmd = f"run {timeout}"
+    else:
+        # Run in chunks to allow interrupt checking and progress display
+        run_cmd = """
+# Run simulation in chunks to allow interrupt checking
+set _vproj_chunk_count 0
+while {1} {
+    _vproj_check_interrupt
+    # Check if simulation is still running
+    if {[catch {current_time} ct]} {
+        break  ;# Simulation ended
+    }
+    run 100us
+    incr _vproj_chunk_count
+    # Print time and flush VCD every 10 chunks (1ms sim time)
+    if {$_vproj_chunk_count >= 10} {
+        puts "SIM_PROGRESS:[current_time]"
+        flush_vcd
+        set _vproj_chunk_count 0
+    }
+}"""
+
+    # Define interrupt check proc inline (works in both batch and daemon mode)
+    interrupt_flag_path = (pd / ".vproj-interrupt").resolve()
+    vcd_path = output.resolve()
 
     tcl = make_smart_open(xpr) + f"""
+# Define interrupt check proc (checks for file-based interrupt flag)
+proc _vproj_check_interrupt {{}} {{
+    set flag_file {tcl_quote(interrupt_flag_path)}
+    if {{[file exists $flag_file]}} {{
+        file delete -force $flag_file
+        error "Interrupted by user"
+    }}
+}}
+
 # Set testbench as top for simulation
 set_property top {tb_name} [get_filesets sim_1]
 update_compile_order -fileset sim_1
@@ -440,15 +503,30 @@ update_compile_order -fileset sim_1
 # Launch simulation
 launch_simulation
 
-# Run until completion
-run all
+# Set up VCD output and restart to capture from T=0
+open_vcd {tcl_quote(vcd_path)}
+log_vcd *
+restart
 
-# Export waveform
-# Note: xsim waveform is in the project sim directory
+# Run simulation (with interrupt checking if no timeout)
+if {{[catch {{
+    {run_cmd}
+}} err]}} {{
+    puts "Simulation stopped: $err"
+}}
+
+# Print final simulation time
+catch {{puts "Final time: [current_time]"}}
+
+# Flush and close VCD file to ensure all data is written
+catch {{flush_vcd}}
+catch {{close_vcd}}
+
+# Close simulation
+catch {{close_sim}}
+
 puts "Simulation complete"
-puts "Waveform available in project sim directory"
-
-close_sim
+puts "Waveform: {vcd_path}"
 """ + make_smart_close()
 
     return run_vivado_tcl_auto(

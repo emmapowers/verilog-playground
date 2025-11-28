@@ -11,6 +11,70 @@ from typing import Optional
 import click
 
 from .vivado import PROJECT_DIR_DEFAULT, run_vivado_tcl_auto, tcl_quote
+from .utils import display_path
+
+
+def extract_board_part(tcl_content: str) -> Optional[str]:
+    """Extract board_part from TCL content.
+
+    Returns the full board part identifier, e.g. 'digilentinc.com:nexys-a7-100t:part0:1.3'
+    """
+    match = re.search(
+        r'set_property\s+-name\s+"board_part"\s+-value\s+"([^"]+)"',
+        tcl_content,
+    )
+    return match.group(1) if match else None
+
+
+def get_board_name(board_part: str) -> str:
+    """Extract board name from board_part identifier.
+
+    E.g. 'digilentinc.com:nexys-a7-100t:part0:1.3' -> 'nexys-a7-100t'
+    """
+    parts = board_part.split(":")
+    return parts[1] if len(parts) >= 2 else board_part
+
+
+def make_board_install_tcl(board_part: str, board_name: str) -> str:
+    """Generate TCL to check and install board files if missing."""
+    return f'''
+# Set up xhub board store paths so get_board_parts can find installed boards
+catch {{
+    set _xhub_base "$::env(HOME)/.Xilinx/Vivado"
+    foreach _ver [glob -nocomplain -directory $_xhub_base -type d *] {{
+        set _boards_dir [file join $_ver xhub board_store xilinx_board_store XilinxBoardStore Vivado [file tail $_ver] boards]
+        if {{[file exists $_boards_dir]}} {{
+            set _current_paths [get_param board.repoPaths]
+            if {{$_current_paths eq ""}} {{
+                set_param board.repoPaths $_boards_dir
+            }} elseif {{[string first $_boards_dir $_current_paths] == -1}} {{
+                set_param board.repoPaths "$_current_paths:$_boards_dir"
+            }}
+        }}
+    }}
+}}
+
+# Auto-install board files if missing
+set _board_part "{board_part}"
+set _board_name "{board_name}"
+if {{[llength [get_board_parts -quiet $_board_part]] == 0}} {{
+    puts "Board '$_board_name' not found. Attempting to install from xhub..."
+    if {{[catch {{
+        xhub::refresh_catalog [xhub::get_xstores xilinx_board_store]
+        set _items [xhub::get_xitems *$_board_name*]
+        if {{[llength $_items] > 0}} {{
+            xhub::install $_items
+            puts "Board files installed successfully."
+        }} else {{
+            puts "WARNING: Could not find board '$_board_name' in xhub store."
+            puts "You may need to install board files manually."
+        }}
+    }} _err]}} {{
+        puts "WARNING: Failed to install board files: $_err"
+        puts "Continuing without board files - some features may not work."
+    }}
+}}
+'''
 
 
 def import_tcl_cmd(
@@ -24,6 +88,7 @@ def import_tcl_cmd(
     batch: bool = False,
     gui: bool = False,
     daemon: bool = False,
+    install_board: bool = True,
 ) -> int:
     """Import/recreate a Vivado project from a TCL script."""
     proj_dir_path = (proj_dir or Path(PROJECT_DIR_DEFAULT)).resolve()
@@ -81,6 +146,14 @@ def import_tcl_cmd(
     pre = ""
     if workdir:
         pre = f"cd {tcl_quote(Path(workdir).resolve())}\n"
+
+    # Auto-install board files if requested and board_part is specified
+    if install_board:
+        board_part = extract_board_part(src)
+        if board_part:
+            board_name = get_board_name(board_part)
+            pre += make_board_install_tcl(board_part, board_name)
+
     tcl = pre + f"source {tcl_quote(patched)}\n"
 
     code = run_vivado_tcl_auto(
@@ -94,6 +167,6 @@ def import_tcl_cmd(
         pass
 
     if code == 0 and not quiet:
-        click.echo(f"Project imported to {proj_dir_path}")
+        click.echo(f"Project imported to {display_path(proj_dir_path)}")
 
     return code
