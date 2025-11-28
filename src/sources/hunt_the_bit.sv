@@ -12,7 +12,7 @@ module hunt_the_bit #(
   localparam int unsigned CounterWidth = $clog2(MaxPeriod);
   localparam [CounterWidth-1:0] MaxCount = '1;
 
-  localparam logic [15:0] GameStartPattern = 16'h0700;
+  localparam logic [15:0] GameStartPattern = 16'h0F00;
   localparam logic [15:0] LoseAPattern = 16'hFFFF;
   localparam logic [15:0] LoseBPattern = 16'h0000;
 
@@ -49,8 +49,8 @@ module hunt_the_bit #(
       end
       HIT: next_state = ROTATE;
       ROTATE: next_state = WAITING;
-      LOSE_A: if (counter == MaxCount / 2) next_state = LOSE_A;
-      LOSE_B: if (counter == MaxCount / 2) next_state = LOSE_B;
+      LOSE_A: if (counter == MaxCount / 2) next_state = LOSE_B;
+      LOSE_B: if (counter == MaxCount / 2) next_state = LOSE_A;
       default:;
     endcase
   end
@@ -83,9 +83,10 @@ module hunt_the_bit #(
       case (current_state)
         GAME_START: led_state <= GameStartPattern;
         HIT: begin
-          if ($countbits(led_state, '1) != 1) begin
-            led_state <= led_state & ~hit_mask;
-          end
+          led_state <= led_state & ~hit_mask;
+          // if ($countbits(led_state, '1) != 1) begin
+          //   led_state <= led_state & ~hit_mask;
+          // end
         end
         ROTATE: led_state <= ({led_state, led_state} >> 1);
         default: ;
@@ -99,14 +100,19 @@ module hunt_the_bit #(
       button_state <= '0;
       last_button_state <= '0;
     end else begin
-      last_button_state <= button_state;
-      button_state <= button;
+      case (current_state)
+        ROTATE: begin
+          last_button_state <= button_state;
+          button_state <= button;
+        end
+        default:;
+      endcase
     end
   end
 
   // Hit/Miss
   always_comb begin
-    logic [15:0] pressed_buttons = '0;
+    automatic logic [15:0] pressed_buttons = '0;
     hit_mask = '0;
     hit = 0;
     miss = 0;

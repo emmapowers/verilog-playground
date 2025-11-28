@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
 module tb_reset_gen;
-  localparam int unsigned ResetCycles = 5;
+  localparam int unsigned ResetCycles = 32;
 
   logic clk = 0;
   logic ext_rst_n = 1;

@@ -106,3 +106,4 @@ Tests use the `@coco_test` decorator from `tests/coco_helper.py`.
   - Use `Fileset` and `RunName` enums from `vproj.constants` instead of magic strings
   - Use `@vivado_command()` decorator from `vproj.cli_utils` for CLI commands
   - Use `add_files_cmd()` with `Fileset` enum for adding files
+- vproj is in the path, no need to pixi run... it
