@@ -75,6 +75,51 @@ foreach fs [list sources_1 constrs_1 sim_1] {
         )
 
 
+def get_files_in_compile_order(
+    proj_hint: Optional[Path],
+    proj_dir: Optional[Path],
+    settings: Optional[Path],
+    batch: bool = False,
+    gui: bool = False,
+    daemon: bool = False,
+) -> list[tuple[str, str, str]]:
+    """Get source files in compile order (for Verilator/Icarus linting).
+
+    Uses Vivado's update_compile_order to determine proper dependency order.
+
+    Returns list of (fileset, path, type) tuples in compile order.
+    """
+    xpr = find_xpr(proj_hint, proj_dir)
+    tcl = (
+        make_smart_open(xpr)
+        + r"""
+update_compile_order -fileset sources_1
+foreach f [get_files -compile_order sources -used_in synthesis -of_objects [get_filesets sources_1]] {
+  set p [get_property NAME $f]
+  set t [get_property FILE_TYPE $f]
+  puts "FILE|sources_1|$p|$t"
+}
+"""
+        + make_smart_close()
+    )
+
+    result = run_vivado_tcl_auto(
+        tcl, proj_dir=proj_dir, settings=settings, quiet=True,
+        batch=batch, gui=gui, daemon=daemon, return_output=True
+    )
+    code, output = result
+    if code != 0:
+        return []
+
+    files = []
+    for line in output.splitlines():
+        if line.startswith("FILE|"):
+            parts = line[5:].split("|", 2)
+            if len(parts) == 3:
+                files.append((parts[0], parts[1], parts[2]))
+    return files
+
+
 def add_files_cmd(
     files: Tuple[Path, ...],
     fileset: Fileset,
@@ -762,6 +807,7 @@ puts "INFO|include_dirs|$inc_dirs"
 # Re-export for CLI
 __all__ = [
     "list_cmd",
+    "get_files_in_compile_order",
     "add_files_cmd",
     "add_src_cmd",
     "add_xdc_cmd",

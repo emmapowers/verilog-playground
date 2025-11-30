@@ -221,15 +221,15 @@ def check_cmd(
     if files:
         file_list = [Path(f) for f in files]
     else:
-        # Get source files from project
-        from .project import list_cmd as project_list_cmd
+        # Get source files from project in compile order
+        from .project import get_files_in_compile_order
 
-        project_files = project_list_cmd(
-            proj_hint, proj_dir, settings, quiet=True,
-            batch=batch, gui=gui, daemon=daemon, return_data=True
+        project_files = get_files_in_compile_order(
+            proj_hint, proj_dir, settings,
+            batch=batch, gui=gui, daemon=daemon
         )
 
-        if isinstance(project_files, int) or not project_files:
+        if not project_files:
             raise click.ClickException("Could not get project files. Specify files explicitly.")
 
         # Filter to only HDL source files (not XDC, not sim_1 testbenches)
