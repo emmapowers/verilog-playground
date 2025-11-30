@@ -1,4 +1,3 @@
-//`include "config.svh"
 
 module seven_segment #(
     int unsigned NumDisplays   = 1,

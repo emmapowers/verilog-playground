@@ -1,5 +1,5 @@
 
-`include "config.svh"
+import constants::*;
 
 module debounce #(
   int unsigned DebouncePeriod

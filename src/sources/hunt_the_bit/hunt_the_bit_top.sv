@@ -1,6 +1,6 @@
 import constants::*;
 
-module top (
+module hunt_the_bit_top (
     input rst_n,
     input clk,
     output [15:0] led,
@@ -11,6 +11,7 @@ module top (
 );
   localparam int unsigned NumDigits = 8;
   localparam int unsigned DecimalWidth = $rtoi($ceil(NumDigits * $clog2(10)));
+  logic [DecimalWidth-1:0] points;
   logic [(NumDigits*4)-1:0] bcd;
   logic [6:0] segment_digits[NumDigits];
   logic dots[NumDigits] = '{default: '0};
@@ -35,6 +36,16 @@ module top (
       );
     end
   endgenerate
+
+  hunt_the_bit #(
+      .MaxPeriod(100_000_000 / 4)
+  ) hunt (
+      .clk(clk),
+      .rst(rst),
+      .led(led),
+      .button(buttons),
+      .points(points)
+  );
 
   bcd_encoder #(
       .DecimalWidth(DecimalWidth),

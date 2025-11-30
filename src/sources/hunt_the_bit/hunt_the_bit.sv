@@ -1,4 +1,4 @@
-`include "config.svh"
+import constants::*;
 
 /***
 * The classic hunt-the bit game, with a couple of additions.
@@ -13,7 +13,7 @@
 * Once there is only 1 led left, every subsequent hit speeds up the led movement, until you lose, at which all the LEDs start flashing.
 ***/
 module hunt_the_bit #(
-    int unsigned MaxPeriod = `CLOCK_FREQ_HZ / 4
+    int unsigned MaxPeriod = CLOCK_FREQ_HZ / 4
 ) (
     input logic clk,
     input logic rst,
